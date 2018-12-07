@@ -32,7 +32,7 @@ The parser will treat this character as the delimiter in -HostFile. Defaults to 
 Ignored if HostFile is not specified.
 .NOTES
 Author: Eric Siron
-Version 1.0, December 6, 2018
+Version 1.0a, December 7, 2018
 Released under MIT license
 .INPUTS
 String[]
@@ -87,7 +87,7 @@ begin
 	$PSDefaultParameterValues['Get-CimInstance:Namespace'] = 'root/virtualization/v2'
 	$PathToHostSwitchPort = 'Msvm_LANEndpoint/Msvm_LANEndpoint/Msvm_EthernetSwitchPort'
 	$PathToHostVlanSettings = 'Msvm_EthernetPortAllocationSettingData/Msvm_EthernetSwitchPortVlanSettingData'
-	
+
 	$MacList = New-Object -TypeName System.Collections.ArrayList
 
 	$SuppliedHostNames = New-Object -TypeName System.Collections.ArrayList
@@ -219,7 +219,7 @@ begin
 					{
 						if ($VlanId -ne $VlanInfo.NativeVlanId)
 						{
-							$OutNull = $VlanInfoArray.Add($VlanId)	
+							$OutNull = $VlanInfoArray.Add($VlanId)
 						}
 					}
 				}
@@ -261,7 +261,7 @@ begin
 		[bool](
 			$Left.MacAddress -eq $Right.MacAddress -and
 			(
-				$Left.ComputerName -ne $Right.ComputerName -or 
+				$Left.ComputerName -ne $Right.ComputerName -or
 				$Left.VmID -ne $Right.VmID -or
 				$Left.AdapterID -ne $Right.AdapterID
 			) -and
@@ -285,7 +285,7 @@ process
 		$Activity = 'Verifying hosts lists'
 		foreach ($HostName in $SuppliedHostNames)
 		{
-			if(-not $HostName)
+			if (-not $HostName)
 			{
 				continue
 			}
@@ -315,11 +315,11 @@ process
 		{
 			if ($ProcessedHostNames.Contains($HostName))
 			{
-				continue	
+				continue
 			}
 			else
 			{
-				$OutNull = $ProcessedHostNames.Add($HostName)				
+				$OutNull = $ProcessedHostNames.Add($HostName)
 			}
 
 			$Session = $null
@@ -330,7 +330,7 @@ process
 			}
 			catch
 			{
-				Write-Warning -Message ('Cannot connect to {0}' -f $HostName)				
+				Write-Warning -Message ('Cannot connect to {0}' -f $HostName)
 				Write-Error -Exception $_.Exception -ErrorAction Continue
 				continue
 			}
@@ -345,13 +345,23 @@ process
 						Write-Progress -Activity $Activity -Status 'Loading host adapters' -CurrentOperation $CurrentOperation
 						$AdapterList = New-Object System.Collections.ArrayList
 
-						# do nothing on error; errors mean that AddRange was called with null, which means that no associated instances exist
-						$AdapterList.AddRange((Get-CimAssociatedInstance -InputObject $VM -ResultClassName Msvm_ExternalEthernetPort -ErrorAction SilentlyContinue))
-						$AdapterList.AddRange((Get-CimAssociatedInstance -InputObject $VM -ResultClassName Msvm_InternalEthernetPort -ErrorAction SilentlyContinue))
-						
+						$ExternalPorts = Get-CimAssociatedInstance -InputObject $VM -ResultClassName Msvm_ExternalEthernetPort -ErrorAction SilentlyContinue
+						$InternalPorts = Get-CimAssociatedInstance -InputObject $VM -ResultClassName Msvm_InternalEthernetPort -ErrorAction SilentlyContinue
+
+						if ($ExternalPorts)
+						{
+							if ($ExternalPorts.Count) { $AdapterList.AddRange($ExternalPorts) }
+							else { $OutNull = $AdapterList.Add($ExternalPorts) }
+						}
+						if ($InternalPorts)
+						{
+							if ($InternalPorts.Count) { $AdapterList.AddRange($InternalPorts) }
+							else { $OutNull = $AdapterList.Add($InternalPorts) }
+						}
+
 						foreach ($Adapter in $AdapterList)
 						{
-							if($Adapter.IsBound)
+							if ($Adapter.IsBound)
 							{
 								continue
 							}
@@ -389,10 +399,10 @@ process
 										else
 										{
 											$VLAN = $MSAdapter.VlanID
-										}	
+										}
 									}
 								}
-								$OutNull = $MacList.Add((New-MacReportItem -MacAddress $Adapter.PermanentAddress -ComputerName $HostName -AdapterName $MSAdapter.Name -AdapterID $AdapterID -IsStatic $true -SwitchName $SwitchName -Vlan $VLAN))		
+								$OutNull = $MacList.Add((New-MacReportItem -MacAddress $Adapter.PermanentAddress -ComputerName $HostName -AdapterName $MSAdapter.Name -AdapterID $AdapterID -IsStatic $true -SwitchName $SwitchName -Vlan $VLAN))
 							}
 						}
 					}
@@ -409,7 +419,7 @@ process
 							$VMSwitchName = [String]::Empty
 							if ($EthPortSettings.EnabledState -eq 2)
 							{
-								$VMSwitchName = $EthPortSettings.LastKnownSwitchName	
+								$VMSwitchName = $EthPortSettings.LastKnownSwitchName
 							}
 							$VNICPortSettings = Get-CimAssociatedInstance -InputObject $EthPortSettings -ResultClassName Msvm_SyntheticEthernetPortSettingData
 							if (-not $VNICPortSettings)
@@ -441,7 +451,7 @@ end
 	$Duplicates = New-Object -TypeName System.Collections.ArrayList
 	foreach ($OuterItem in $MacList)
 	{
-		foreach ($InnerItem in $MacList)	
+		foreach ($InnerItem in $MacList)
 		{
 			if (-not $Duplicates.Contains($InnerItem))
 			{
@@ -450,7 +460,7 @@ end
 					$OutNull = $Duplicates.Add($InnerItem)
 				}
 			}
-			
+
 		}
 	}
 
