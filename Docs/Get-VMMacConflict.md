@@ -270,9 +270,6 @@ A custom object with the following properties:
 
 Author: Eric Siron
 
-Version 1.0, November 23, 2018
+Version 1.0, December 7, 2018
 
 Released under MIT license
-
-## RELATED LINKS
-[Get-CimInstance](https://docs.microsoft.com/en-us/powershell/module/cimcmdlets/get-ciminstance)
