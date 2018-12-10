@@ -50,7 +50,7 @@ Checks all of the named Hyper-V systems for duplicate Hyper-V virtual machine MA
 PS C:\> Get-VMMacConflict -HostFile C:\hostnames.txt
 ```
 
-Reads host names from C:\hostnames.txt; it must be a single-column file of host names or all host names must be in the first column. VMs on these hosts are scanned for duplicate MAC addresses.
+Reads host names from C:\hostnames.txt; it must be header-less and either a single-column file of host names or all host names must be in the first column. VMs on these hosts are scanned for duplicate MAC addresses.
 
 ### Example 5: Import a host names file with a more complicated structure, scan the hosts for duplicate VM MAC addresses
 
@@ -60,11 +60,12 @@ PS C:\> Get-VMMacConflict -HostFile C:\hostnames.txt -FileHasHeader -HeaderColum
 
 Reads host names from C:\hostnames.txt; host names must be in a column named "HostName". VMs on these hosts are scanned for duplicate MAC addresses. Example file structure:
 
-HostOwner, HostName
-Eric, svhv1
-Eric, svhv2
-Andy, svhv3
-Andy, svhv4
+| HostOwner | HostName |
+| - | - |
+| Eric | svhv1 |
+| Eric | svhv2 |
+| Andy | svhv3 |
+| Andy | svhv4 |
 
 ### Example 6: Import a multiple-column file with no headers, scan indicated hosts for duplicate VM MAC addresses
 
@@ -73,10 +74,12 @@ PS C:\> Get-VMMacConflict -HostFile C:\hostnames.txt -HeaderColumn svhv1
 ```
 Reads host names from C:\hostnames.txt; looks for host names in a header-less column starting with svhv1. VMs on these hosts are scanned for duplicate MAC addresses. Example file structure:
 
-Eric, svhv1
-Eric, svhv2
-Andy, svhv3
-Andy, svhv4
+| | |
+| - | - |
+| Eric | svhv1 |
+| Eric | svhv2 |
+| Andy | svhv3 |
+| Andy | svhv4 |
 
 ### Example 7: Scan the local host, consider MACs to be duplicated even if their adapters reside in different VLANs
 
