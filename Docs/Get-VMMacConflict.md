@@ -60,10 +60,10 @@ PS C:\> Get-VMMacConflict -HostFile C:\hostnames.txt -FileHasHeader -HeaderColum
 
 Reads host names from C:\hostnames.txt; host names must be in a column named "HostName". VMs on these hosts are scanned for duplicate MAC addresses. Example file structure:
 
-HostOwner, HostName  
-Eric, svhv1  
-Eric, svhv2  
-Andy, svhv3  
+HostOwner, HostName
+Eric, svhv1
+Eric, svhv2
+Andy, svhv3
 Andy, svhv4
 
 ### Example 6: Import a multiple-column file with no headers, scan indicated hosts for duplicate VM MAC addresses
@@ -73,9 +73,9 @@ PS C:\> Get-VMMacConflict -HostFile C:\hostnames.txt -HeaderColumn svhv1
 ```
 Reads host names from C:\hostnames.txt; looks for host names in a header-less column starting with svhv1. VMs on these hosts are scanned for duplicate MAC addresses. Example file structure:
 
-Eric, svhv1  
-Eric, svhv2  
-Andy, svhv3  
+Eric, svhv1
+Eric, svhv2
+Andy, svhv3
 Andy, svhv4
 
 ### Example 7: Scan the local host, consider MACs to be duplicated even if their adapters reside in different VLANs
@@ -93,6 +93,14 @@ PS C:\> Get-VMMacConflict -IncludeDisconnected -IncludeDisabled
 ```
 
 Checks the local machine for duplicate Hyper-V virtual machine MAC addresses. Includes active host adapters, even if they are disconnected or disabled.
+
+### EXAMPLE 9: Retrieve all information and show output in a grid
+
+```PowerShell
+PS C:\> Get-VMMacConflict -ComputerName svhv1, svhv2, svhv3, svhv4 -All | Out-GridView
+```
+
+Retrieves information about all active adapters from the specified hosts and displays a grid view.
 
 ## PARAMETERS
 
@@ -247,6 +255,19 @@ Accept pipeline input: False
 Accept wildcard characters: False
 ```
 
+### -All
+
+Output all information on every discovered adapter.
+
+```yaml
+Type: SwitchParameter
+Required: False
+Position: Named
+Default value: 0
+Accept pipeline input: False
+Accept wildcard characters: False
+```
+
 ## INPUTS
 
 String[]
@@ -256,20 +277,20 @@ String[]
 **System.Management.Automation.PSObject[]**
 A custom object with the following properties:
 
-*VMName*: Name of the virtual machine; blank if the adapter belongs to the management operating system  
-*VmID*: Virtual machine GUID. Will have the same name as the host if the adapter belongs to the management operating system  
-*ComputerName*: Physical host name  
-*AdapterName*: Friendly name of the adapter  
-*AdapterID*: Adapter GUID. For physical adapters, the Device GUID  
-*MacAddress*: Adapter's MAC address  
-*IsStatic*: True if the MAC is statically assigned, False if dynamic  
-*SwitchName*: Name of the connected virtual switch, if any  
-*Vlan*: VLAN of the adapter, if any. If the adapter is in private mode, will display as N:X, where N is the primary VLAN and X is the secondary
+- *VMName*: Name of the virtual machine; blank if the adapter belongs to the management operating system
+- *VmID*: Virtual machine GUID. Will have the same name as the host if the adapter belongs to the management operating system
+- *ComputerName*: Physical host name
+- *AdapterName*: Friendly name of the adapter
+- *AdapterID*: Adapter GUID. For physical adapters, the Device GUID
+- *MacAddress*: Adapter's MAC address
+- *IsStatic*: True if the MAC is statically assigned, False if dynamic
+- *SwitchName*: Name of the connected virtual switch, if any
+- *Vlan*: VLAN of the adapter, if any. If the adapter is in private mode, will display as N:X, where N is the primary VLAN and X is the secondary
 
 ## NOTES
 
 Author: Eric Siron
 
-Version 1.0, December 7, 2018
+First publication: December 7, 2018
 
 Released under MIT license
