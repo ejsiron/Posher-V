@@ -292,13 +292,6 @@ A custom object with the following properties:
 
 ## NOTES
 
-<<<<<<< HEAD
 Author: Eric Siron  
 First publication: December 6, 2018  
-=======
-Author: Eric Siron
-
-First publication: December 7, 2018
-
->>>>>>> a06443606754e33d53d8ef368ac54574d1b586e6
 Released under MIT license
