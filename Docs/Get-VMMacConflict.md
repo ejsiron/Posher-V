@@ -50,7 +50,7 @@ Checks all of the named Hyper-V systems for duplicate Hyper-V virtual machine MA
 PS C:\> Get-VMMacConflict -HostFile C:\hostnames.txt
 ```
 
-Reads host names from C:\hostnames.txt; it must be a single-column file of host names or all host names must be in the first column. VMs on these hosts are scanned for duplicate MAC addresses.
+Reads host names from C:\hostnames.txt; it must be header-less and either a single-column file of host names or all host names must be in the first column. VMs on these hosts are scanned for duplicate MAC addresses.
 
 ### Example 5: Import a host names file with a more complicated structure, scan the hosts for duplicate VM MAC addresses
 
@@ -60,11 +60,12 @@ PS C:\> Get-VMMacConflict -HostFile C:\hostnames.txt -FileHasHeader -HeaderColum
 
 Reads host names from C:\hostnames.txt; host names must be in a column named "HostName". VMs on these hosts are scanned for duplicate MAC addresses. Example file structure:
 
-HostOwner, HostName  
-Eric, svhv1  
-Eric, svhv2  
-Andy, svhv3  
-Andy, svhv4
+| HostOwner | HostName |
+| - | - |
+| Eric | svhv1 |
+| Eric | svhv2 |
+| Andy | svhv3 |
+| Andy | svhv4 |
 
 ### Example 6: Import a multiple-column file with no headers, scan indicated hosts for duplicate VM MAC addresses
 
@@ -73,10 +74,12 @@ PS C:\> Get-VMMacConflict -HostFile C:\hostnames.txt -HeaderColumn svhv1
 ```
 Reads host names from C:\hostnames.txt; looks for host names in a header-less column starting with svhv1. VMs on these hosts are scanned for duplicate MAC addresses. Example file structure:
 
-Eric, svhv1  
-Eric, svhv2  
-Andy, svhv3  
-Andy, svhv4
+| | |
+| - | - |
+| Eric | svhv1 |
+| Eric | svhv2 |
+| Andy | svhv3 |
+| Andy | svhv4 |
 
 ### Example 7: Scan the local host, consider MACs to be duplicated even if their adapters reside in different VLANs
 
@@ -93,6 +96,14 @@ PS C:\> Get-VMMacConflict -IncludeDisconnected -IncludeDisabled
 ```
 
 Checks the local machine for duplicate Hyper-V virtual machine MAC addresses. Includes active host adapters, even if they are disconnected or disabled.
+
+### EXAMPLE 9: Retrieve all information and show output in a grid
+
+```PowerShell
+PS C:\> Get-VMMacConflict -ComputerName svhv1, svhv2, svhv3, svhv4 -All | Out-GridView
+```
+
+Retrieves information about all active adapters from the specified hosts and displays a grid view.
 
 ## PARAMETERS
 
@@ -247,6 +258,19 @@ Accept pipeline input: False
 Accept wildcard characters: False
 ```
 
+### -All
+
+Output all information on every discovered adapter.
+
+```yaml
+Type: SwitchParameter
+Required: False
+Position: Named
+Default value: 0
+Accept pipeline input: False
+Accept wildcard characters: False
+```
+
 ## INPUTS
 
 String[]
@@ -256,18 +280,25 @@ String[]
 **System.Management.Automation.PSObject[]**
 A custom object with the following properties:
 
-*VMName*: Name of the virtual machine; blank if the adapter belongs to the management operating system  
-*VmID*: Virtual machine GUID. Will have the same name as the host if the adapter belongs to the management operating system  
-*ComputerName*: Physical host name  
-*AdapterName*: Friendly name of the adapter  
-*AdapterID*: Adapter GUID. For physical adapters, the Device GUID  
-*MacAddress*: Adapter's MAC address  
-*IsStatic*: True if the MAC is statically assigned, False if dynamic  
-*SwitchName*: Name of the connected virtual switch, if any  
-*Vlan*: VLAN of the adapter, if any. If the adapter is in private mode, will display as N:X, where N is the primary VLAN and X is the secondary
+- *VMName*: Name of the virtual machine; blank if the adapter belongs to the management operating system
+- *VmID*: Virtual machine GUID. Will have the same name as the host if the adapter belongs to the management operating system
+- *ComputerName*: Physical host name
+- *AdapterName*: Friendly name of the adapter
+- *AdapterID*: Adapter GUID. For physical adapters, the Device GUID
+- *MacAddress*: Adapter's MAC address
+- *IsStatic*: True if the MAC is statically assigned, False if dynamic
+- *SwitchName*: Name of the connected virtual switch, if any
+- *Vlan*: VLAN of the adapter, if any. If the adapter is in private mode, will display as N:X, where N is the primary VLAN and X is the secondary
 
 ## NOTES
 
+<<<<<<< HEAD
 Author: Eric Siron  
 First publication: December 6, 2018  
+=======
+Author: Eric Siron
+
+First publication: December 7, 2018
+
+>>>>>>> a06443606754e33d53d8ef368ac54574d1b586e6
 Released under MIT license

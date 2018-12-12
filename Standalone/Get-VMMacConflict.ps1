@@ -30,9 +30,11 @@ Ignored if HostFile is not specified.
 .PARAMETER Delimiter
 The parser will treat this character as the delimiter in -HostFile. Defaults to the separator defined in the local machine's current culture.
 Ignored if HostFile is not specified.
+.PARAMETER All
+Bypasses duplicate check and outputs information on all discovered adapters.
 .NOTES
 Author: Eric Siron
-Version 1.0, December 6, 2018
+Version 1.1, December 10, 2018
 Released under MIT license
 .INPUTS
 String[]
@@ -60,9 +62,13 @@ Checks the local machine for duplicate Hyper-V virtual machine MAC addresses, ev
 .EXAMPLE
 PS C:\> Get-VMMacConflict -IncludeDisconnected -IncludeDisabled
 Checks the local machine for duplicate Hyper-V virtual machine MAC addresses. Includes active host adapters, even if they are disconnected or disabled.
+.EXAMPLE
+PS C:\> Get-VMMacConflict -ComputerName svhv1, svhv2, svhv3, svhv4 -All | Out-GridView
+Retrieves information about all active adapters from the specified hosts and displays a grid view.
 .LINK
 https://github.com/ejsiron/Posher-V/blob/master/Docs/Get-VMMacConflict.md
 #>
+#requires -Version 4
 [CmdletBinding()]
 [OutputType([psobject[]])]
 param
@@ -76,18 +82,19 @@ param
 	[Parameter()][String]$HostFile = [String]::Empty,
 	[Parameter()][Switch]$FileHasHeader,
 	[Parameter()][String]$HeaderColumn = [String]::Empty,
-	[Parameter()][Char]$Delimiter = (Get-Culture).TextInfo.ListSeparator
+	[Parameter()][Char]$Delimiter = (Get-Culture).TextInfo.ListSeparator,
+	[Parameter()][Switch]$All
 )
 
 begin
 {
-	Set-StrictMode -Off	# script uses .Count to determine if an item is a collection and sometimes passes empty parameters intentionally
+	Set-StrictMode -Version Latest
 	$ErrorActionPreference = [System.Management.Automation.ActionPreference]::Continue	# ensure that, even if errors occur, PSDefaultParameters is reset
 	$ExistingDefaultParams = $PSDefaultParameterValues.Clone()
 	$PSDefaultParameterValues['Get-CimInstance:Namespace'] = 'root/virtualization/v2'
 	$PathToHostSwitchPort = 'Msvm_LANEndpoint/Msvm_LANEndpoint/Msvm_EthernetSwitchPort'
 	$PathToHostVlanSettings = 'Msvm_EthernetPortAllocationSettingData/Msvm_EthernetSwitchPortVlanSettingData'
-	
+
 	$MacList = New-Object -TypeName System.Collections.ArrayList
 
 	$SuppliedHostNames = New-Object -TypeName System.Collections.ArrayList
@@ -102,7 +109,7 @@ begin
 	{
 		Write-Verbose -Message ('Importing host names from "{0}"' -f $HostFile)
 		$HostListFile = (Resolve-Path -Path $HostFile).Path
-		$FileData = Import-Csv -Path $HostFile -Delimiter $Delimiter
+		$FileData = Import-Csv -Path $HostListFile -Delimiter $Delimiter
 		if ($FileData)
 		{
 			if ([String]::IsNullOrEmpty($HeaderColumn))
@@ -126,29 +133,21 @@ begin
 			[Parameter()][Switch]$KeyOnly
 		)
 		$PathNodes = $PathToInstance.Split('/')
-		$SearchInstances = New-Object System.Collections.ArrayList
-		$OutNull = $SearchInstances.Add($CimInstance)
+		$SearchInstances = @($CimInstance)
 		for ($i = 0; $i -lt $PathNodes.Length; $i++)
 		{
 			$ChildCounter = 1
 			if ($SearchInstances.Count)
 			{
 				$OnlyKeys = [bool]($KeyOnly -or $i -ne ($PathNodes.Count - 1))
-				$TemporarySearchInstances = New-Object System.Collections.ArrayList
+				$TemporarySearchInstances = New-Object -TypeName System.Collections.ArrayList
 				foreach ($SearchInstance in $SearchInstances)
 				{
 					Write-Progress -Id 2 -Activity 'Querying CIM instances' -Status ('At distance {0} of {1}' -f ($i + 1), $PathNodes.Count) -CurrentOperation ('Loading {0} instances related to {1}' -f $SearchInstances.Count, $SearchInstance.CimClass.CimClassName) -PercentComplete (($ChildCounter++) / $SearchInstances.Count * 100)
-					$AssociatedInstances = Get-CimAssociatedInstance -InputObject $SearchInstance -ResultClassName $PathNodes[$i]
+					$AssociatedInstances = @(Get-CimAssociatedInstance -InputObject $SearchInstance -ResultClassName $PathNodes[$i] -KeyOnly $OnlyKeys)
 					if ($AssociatedInstances)
 					{
-						if ($AssociatedInstances.Count)
-						{
-							$OutNull = $TemporarySearchInstances.AddRange($AssociatedInstances)
-						}
-						else
-						{
-							$OutNull = $TemporarySearchInstances.Add($AssociatedInstances)
-						}
+						$TemporarySearchInstances.AddRange($AssociatedInstances)
 					}
 				}
 				Write-Progress -Id 2 -Activity 'Querying CIM instances' -Completed
@@ -179,7 +178,7 @@ begin
 			[Parameter()][String]$SwitchName = [String]::Empty,
 			[Parameter()][String]$VlanInfo
 		)
-		$MacReportItem = New-Object psobject
+		$MacReportItem = New-Object -TypeName psobject
 		$MacReportItemNoteProperties = [ordered]@{
 			VMName       = $VMName;
 			VmID         = $VmID;
@@ -191,11 +190,7 @@ begin
 			SwitchName   = $SwitchName;
 			Vlan         = $VlanInfo
 		}
-		$AddMemberInvariants = @{
-			InputObject         = $MacReportItem;
-			NotePropertyMembers = $MacReportItemNoteProperties;
-		}
-		$OutNull = Add-Member @AddMemberInvariants
+		$OutNull = Add-Member -InputObject $MacReportItem -NotePropertyMembers $MacReportItemNoteProperties
 		$MacReportItem
 	}
 
@@ -206,26 +201,23 @@ begin
 			[Parameter()][Microsoft.Management.Infrastructure.CimInstance]$VlanInfo
 		)
 		$VlanInfoArray = New-Object -TypeName System.Collections.ArrayList
-		$OutNull = $VlanInfoArray.Add('ph')	# prevent PS from decaying the arraylist
 		if ($VlanInfo)
 		{
 			switch ($VlanInfo.OperationMode)
 			{
-				2
+				2 # Trunk
 				{
-					# Trunk
 					$OutNull = $VlanInfoArray.Add($VlanInfo.NativeVlanId)
 					foreach ($VlanId in $VlanInfo.TrunkVlanIdArray)
 					{
 						if ($VlanId -ne $VlanInfo.NativeVlanId)
 						{
-							$OutNull = $VlanInfoArray.Add($VlanId)	
+							$OutNull = $VlanInfoArray.Add($VlanId)
 						}
 					}
 				}
-				3
+				3 # Private
 				{
-					# Private
 					if ($VlanInfo.PvlanMode -eq 3)	# promiscuous; allows multiple secondaries
 					{
 						foreach ($SecondaryVlan in $VlanInfo.SecondaryVlanIdArray)
@@ -261,7 +253,7 @@ begin
 		[bool](
 			$Left.MacAddress -eq $Right.MacAddress -and
 			(
-				$Left.ComputerName -ne $Right.ComputerName -or 
+				$Left.ComputerName -ne $Right.ComputerName -or
 				$Left.VmID -ne $Right.VmID -or
 				$Left.AdapterID -ne $Right.AdapterID
 			) -and
@@ -285,7 +277,7 @@ process
 		$Activity = 'Verifying hosts lists'
 		foreach ($HostName in $SuppliedHostNames)
 		{
-			if(-not $HostName)
+			if ([String]::IsNullOrEmpty($HostName))
 			{
 				continue
 			}
@@ -310,16 +302,15 @@ process
 		}
 		Write-Progress -Activity $Activity -Completed
 
-		$Activity = 'Discovering MAC addresses'
 		foreach ($HostName in $VerifiedHostNames)
 		{
 			if ($ProcessedHostNames.Contains($HostName))
 			{
-				continue	
+				continue
 			}
 			else
 			{
-				$OutNull = $ProcessedHostNames.Add($HostName)				
+				$OutNull = $ProcessedHostNames.Add($HostName)
 			}
 
 			$Session = $null
@@ -330,70 +321,77 @@ process
 			}
 			catch
 			{
-				Write-Warning -Message ('Cannot connect to {0}' -f $HostName)				
+				Write-Warning -Message ('Cannot connect to {0}' -f $HostName)
 				Write-Error -Exception $_.Exception -ErrorAction Continue
 				continue
 			}
 
+			$Activity = 'Discovering MAC addresses on {0}' -f $Session.ComputerName
 			foreach ($VM in Get-CimInstance -CimSession $Session -ClassName Msvm_ComputerSystem)
 			{
 				$CurrentOperation = 'Querying {0}' -f $VM.ElementName
-				if ($HostName -eq $VM.Name)
+				if ($HostName -eq $VM.Name -and -not $ExcludeHost) # "$VM" in this case is the physical machine
 				{
-					if (-not $ExcludeHost)
-					{
-						Write-Progress -Activity $Activity -Status 'Loading host adapters' -CurrentOperation $CurrentOperation
-						$AdapterList = New-Object System.Collections.ArrayList
+					Write-Progress -Activity $Activity -Status 'Loading host adapters' -CurrentOperation $CurrentOperation
+					$AdapterList = New-Object System.Collections.ArrayList
 
-						# do nothing on error; errors mean that AddRange was called with null, which means that no associated instances exist
-						$AdapterList.AddRange((Get-CimAssociatedInstance -InputObject $VM -ResultClassName Msvm_ExternalEthernetPort -ErrorAction SilentlyContinue))
-						$AdapterList.AddRange((Get-CimAssociatedInstance -InputObject $VM -ResultClassName Msvm_InternalEthernetPort -ErrorAction SilentlyContinue))
-						
-						foreach ($Adapter in $AdapterList)
+					$ExternalPorts = @(Get-CimAssociatedInstance -InputObject $VM -ResultClassName Msvm_ExternalEthernetPort -ErrorAction SilentlyContinue)
+					$InternalPorts = @(Get-CimAssociatedInstance -InputObject $VM -ResultClassName Msvm_InternalEthernetPort -ErrorAction SilentlyContinue)
+
+					if ($ExternalPorts)
+					{
+						$AdapterList.AddRange($ExternalPorts)
+					}
+
+					if ($InternalPorts)
+					{
+						$AdapterList.AddRange($ExternalPorts)
+					}
+
+					foreach ($Adapter in $AdapterList)
+					{
+						if ($Adapter.IsBound)
 						{
-							if($Adapter.IsBound)
+							continue
+						}
+						$TargetDeviceId = $null
+						if ($Adapter.DeviceId -match '{.*}')
+						{
+							$TargetDeviceId = $Matches[0]
+						}
+						$VLAN = 0
+						$SwitchName = [String]::Empty
+						Write-Progress -Activity $Activity -Status 'Loading host adapter information' -CurrentOperation $CurrentOperation
+						$MSAdapter = Get-CimInstance -CimSession $Session -Namespace root/StandardCimv2 -ClassName MSFT_NetAdapter -Filter ('DeviceId="{0}"' -f $TargetDeviceId)
+						$AdapterID = $TargetDeviceId
+						$Enabled = $MSAdapter.State -eq 2 -or $IncludeDisabled
+						$Connected = $MSAdapter.MediaConnectState -eq 1 -or ($IncludeDisconnected -or ($MSAdapter.State -ne 2 -and $IncludeDisabled))
+						if ($Enabled -and $Connected)
+						{
+							if ($Adapter.CimClass.CimClassName -eq 'Msvm_InternalEthernetPort')
 							{
-								continue
-							}
-							$TargetDeviceId = $null
-							if ($Adapter.DeviceId -match '{.*}')
-							{
-								$TargetDeviceId = $Matches[0]
-							}
-							$VLAN = 0
-							$SwitchName = [String]::Empty
-							Write-Progress -Activity $Activity -Status 'Loading host adapter information' -CurrentOperation $CurrentOperation
-							$MSAdapter = Get-CimInstance -CimSession $Session -Namespace root/StandardCimv2 -ClassName MSFT_NetAdapter -Filter ('DeviceId="{0}"' -f $TargetDeviceId)
-							$AdapterID = $TargetDeviceId
-							$Enabled = $MSAdapter.State -eq 2 -or $IncludeDisabled
-							$Connected = $MSAdapter.MediaConnectState -eq 1 -or ($IncludeDisconnected -or ($MSAdapter.State -ne 2 -and $IncludeDisabled))
-							if ($Enabled -and $Connected)
-							{
-								if ($Adapter.CimClass.CimClassName -eq 'Msvm_InternalEthernetPort')
+								Write-Progress -Activity $Activity -Status 'Loading host adapter switch information' -CurrentOperation $CurrentOperation
+								$SwitchPort = Get-CimPathedAssociation -CimInstance $Adapter -PathToInstance $PathToHostSwitchPort
+								if ($SwitchPort)
 								{
-									Write-Progress -Activity $Activity -Status 'Loading host adapter switch information' -CurrentOperation $CurrentOperation
-									$SwitchPort = Get-CimPathedAssociation -CimInstance $Adapter -PathToInstance $PathToHostSwitchPort
-									if ($SwitchPort)
+									$AdapterID = ('Microsoft:{0}\{1}' -f $SwitchPort.SystemName, $SwitchPort.Name)
+									$VMSwitch = Get-CimAssociatedInstance -InputObject $SwitchPort -ResultClassName Msvm_VirtualEthernetSwitch
+									if ($VMSwitch)
 									{
-										$AdapterID = ('Microsoft:{0}\{1}' -f $SwitchPort.SystemName, $SwitchPort.Name)
-										$VMSwitch = Get-CimAssociatedInstance -InputObject $SwitchPort -ResultClassName Msvm_VirtualEthernetSwitch
-										if ($VMSwitch)
-										{
-											$SwitchName = $VMSwitch.ElementName
-										}
-										$VlanSettings = Get-CimPathedAssociation -CimInstance $SwitchPort -PathToInstance $PathToHostVlanSettings
-										if ($VlanSettings)
-										{
-											$VLAN = $VlanSettings.AccessVlanId
-										}
-										else
-										{
-											$VLAN = $MSAdapter.VlanID
-										}	
+										$SwitchName = $VMSwitch.ElementName
+									}
+									$VlanSettings = Get-CimPathedAssociation -CimInstance $SwitchPort -PathToInstance $PathToHostVlanSettings
+									if ($VlanSettings)
+									{
+										$VLAN = $VlanSettings.AccessVlanId
+									}
+									else
+									{
+										$VLAN = $MSAdapter.VlanID
 									}
 								}
-								$OutNull = $MacList.Add((New-MacReportItem -MacAddress $Adapter.PermanentAddress -ComputerName $HostName -AdapterName $MSAdapter.Name -AdapterID $AdapterID -IsStatic $true -SwitchName $SwitchName -Vlan $VLAN))		
 							}
+							$OutNull = $MacList.Add((New-MacReportItem -MacAddress $Adapter.PermanentAddress -ComputerName $HostName -AdapterName $MSAdapter.Name -AdapterID $AdapterID -IsStatic $true -SwitchName $SwitchName -Vlan $VLAN))
 						}
 					}
 				}
@@ -409,7 +407,7 @@ process
 							$VMSwitchName = [String]::Empty
 							if ($EthPortSettings.EnabledState -eq 2)
 							{
-								$VMSwitchName = $EthPortSettings.LastKnownSwitchName	
+								$VMSwitchName = $EthPortSettings.LastKnownSwitchName
 							}
 							$VNICPortSettings = Get-CimAssociatedInstance -InputObject $EthPortSettings -ResultClassName Msvm_SyntheticEthernetPortSettingData
 							if (-not $VNICPortSettings)
@@ -421,7 +419,7 @@ process
 							{
 								$VlanSettings = Get-CimAssociatedInstance -InputObject $EthPortSettings -ResultClassName Msvm_EthernetSwitchPortVlanSettingData
 
-								foreach ($VlanSet in (Get-VlanInfoArray $VlanSettings | where { $_ -ne 'ph'}))
+								foreach ($VlanSet in @(Get-VlanInfoArray $VlanSettings))
 								{
 									$OutNull = $MacList.Add((New-MacReportItem -MacAddress $VNICPortSettings.Address -VMName $VM.ElementName -VmID $VM.Name -ComputerName $HostName -AdapterName $VNICPortSettings.ElementName -AdapterID $VNICPortSettings.InstanceID -IsStatic $VNICPortSettings.StaticMacAddress -VlanInfo $VlanSet -SwitchName $VMSwitchName))
 								}
@@ -438,23 +436,30 @@ process
 
 end
 {
-	$Duplicates = New-Object -TypeName System.Collections.ArrayList
-	foreach ($OuterItem in $MacList)
+	if ($All)
 	{
-		foreach ($InnerItem in $MacList)	
-		{
-			if (-not $Duplicates.Contains($InnerItem))
-			{
-				if (IsDuplicate -Left $InnerItem -Right $OuterItem -ExcludeVlan $ExcludeVlan.ToBool())
-				{
-					$OutNull = $Duplicates.Add($InnerItem)
-				}
-			}
-			
-		}
+		$MacList.ToArray()
 	}
+	else
+	{
+		$Duplicates = New-Object -TypeName System.Collections.ArrayList
+		foreach ($OuterItem in $MacList)
+		{
+			foreach ($InnerItem in $MacList)
+			{
+				if (-not $Duplicates.Contains($InnerItem))
+				{
+					if (IsDuplicate -Left $InnerItem -Right $OuterItem -ExcludeVlan $ExcludeVlan.ToBool())
+					{
+						$OutNull = $Duplicates.Add($InnerItem)
+					}
+				}
 
-	$Duplicates.ToArray()
+			}
+		}
+
+		$Duplicates.ToArray()
+	}
 
 	$PSDefaultParameterValues.Clear()
 	foreach ($ParamKey in $ExistingDefaultParams.Keys)
