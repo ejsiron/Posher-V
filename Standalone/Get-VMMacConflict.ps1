@@ -34,7 +34,7 @@ Ignored if HostFile is not specified.
 Bypasses duplicate check and outputs information on all discovered adapters.
 .NOTES
 Author: Eric Siron
-Version 1.1, December 10, 2018
+Version 1.1a, December 13, 2018
 Released under MIT license
 .INPUTS
 String[]
@@ -144,7 +144,7 @@ begin
 				foreach ($SearchInstance in $SearchInstances)
 				{
 					Write-Progress -Id 2 -Activity 'Querying CIM instances' -Status ('At distance {0} of {1}' -f ($i + 1), $PathNodes.Count) -CurrentOperation ('Loading {0} instances related to {1}' -f $SearchInstances.Count, $SearchInstance.CimClass.CimClassName) -PercentComplete (($ChildCounter++) / $SearchInstances.Count * 100)
-					$AssociatedInstances = @(Get-CimAssociatedInstance -InputObject $SearchInstance -ResultClassName $PathNodes[$i] -KeyOnly $OnlyKeys)
+					$AssociatedInstances = @(Get-CimAssociatedInstance -InputObject $SearchInstance -ResultClassName $PathNodes[$i] -KeyOnly:$OnlyKeys)
 					if ($AssociatedInstances)
 					{
 						$TemporarySearchInstances.AddRange($AssociatedInstances)
