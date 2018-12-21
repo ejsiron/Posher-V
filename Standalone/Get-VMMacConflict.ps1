@@ -330,8 +330,9 @@ process
 			foreach ($VM in Get-CimInstance -CimSession $Session -ClassName Msvm_ComputerSystem)
 			{
 				$CurrentOperation = 'Querying {0}' -f $VM.ElementName
-				if ($HostName -eq $VM.Name -and -not $ExcludeHost) # "$VM" in this case is the physical machine
+				if ($HostName -eq $VM.Name) # "$VM" in this case is the physical machine
 				{
+					if ($ExcludeHost) { continue }
 					Write-Progress -Activity $Activity -Status 'Loading host adapters' -CurrentOperation $CurrentOperation
 					$AdapterList = New-Object System.Collections.ArrayList
 
