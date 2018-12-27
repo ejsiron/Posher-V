@@ -34,7 +34,7 @@ Ignored if HostFile is not specified.
 Bypasses duplicate check and outputs information on all discovered adapters.
 .NOTES
 Author: Eric Siron
-Version 1.1a, December 13, 2018
+Version 1.2, December 27, 2018
 Released under MIT license
 .INPUTS
 String[]
@@ -408,7 +408,19 @@ process
 							$VMSwitchName = [String]::Empty
 							if ($EthPortSettings.EnabledState -eq 2)
 							{
-								$VMSwitchName = $EthPortSettings.LastKnownSwitchName
+								if(Test-Path -Path 'variable:\EthPortSettings.LastKnownSwitchName')
+								{
+									$VMSwitchName = $EthPortSettings.LastKnownSwitchName	
+								}
+								elseif ($EthPortSettings.HostResource)
+								{
+									$SwitchComponents = $EthPortSettings.HostResource[0].Split(',')
+									$SwitchGUIDComponent = $SwitchComponents[($SwitchComponents.Length-1)]
+									if($SwitchGUIDComponent -match '"(.*)"')
+									{
+										$VMSwitchName = (Get-CimInstance -CimSession $Session -ClassName Msvm_VirtualEthernetSwitch -Filter ('Name="{0}"' -f $Matches[1])).ElementName
+									}
+								}
 							}
 							$VNICPortSettings = Get-CimAssociatedInstance -InputObject $EthPortSettings -ResultClassName Msvm_SyntheticEthernetPortSettingData
 							if (-not $VNICPortSettings)
