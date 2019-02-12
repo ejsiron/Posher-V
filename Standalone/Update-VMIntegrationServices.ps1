@@ -26,7 +26,7 @@ Author: Eric Siron
 Version 1.0, December 11, 2018
 Released under MIT license
 .LINK
-https://github.com/ejsiron/Posher-V/blob/master/docs/Update-VMIntegrationServices.md
+https://ejsiron.github.io/Posher-V/Update-VMIntegrationServices
 #>
 [CmdletBinding(DefaultParameterSetName='Default')]
 param(
