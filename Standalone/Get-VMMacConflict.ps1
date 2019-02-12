@@ -66,7 +66,7 @@ Checks the local machine for duplicate Hyper-V virtual machine MAC addresses. In
 PS C:\> Get-VMMacConflict -ComputerName svhv1, svhv2, svhv3, svhv4 -All | Out-GridView
 Retrieves information about all active adapters from the specified hosts and displays a grid view.
 .LINK
-https://github.com/ejsiron/Posher-V/blob/master/Docs/Get-VMMacConflict.md
+https://github.com/ejsiron/Posher-V/blob/master/docs/Get-VMMacConflict.md
 #>
 #requires -Version 4
 [CmdletBinding()]
