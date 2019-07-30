@@ -72,6 +72,7 @@ Reads host names from C:\hostnames.txt; host names must be in a column named "Ho
 ```PowerShell
 PS C:\> Get-VMMacConflict -HostFile C:\hostnames.txt -HeaderColumn svhv1
 ```
+
 Reads host names from C:\hostnames.txt; looks for host names in a header-less column starting with svhv1. VMs on these hosts are scanned for duplicate MAC addresses. Example file structure:
 
 | | |
