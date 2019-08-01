@@ -73,6 +73,7 @@ param
     [Parameter()][Uint32]$MaximumMemory = 1GB,
     [Parameter()][Uint64]$VHDXSizeBytes = 40GB
 )
+#requires -RunAsAdministrator
 #requires -Modules Hyper-V
 
 $ErrorActionPreference = [System.Management.Automation.ActionPreference]::Stop
