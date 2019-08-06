@@ -10,28 +10,23 @@ param
 
 begin {
     $ErrorActionPreference = [System.Management.Automation.ActionPreference]::Stop
+    Set-StrictMode -Version Latest
 
-    # needs to be converted to CIM because of New-VHD limitations
-    # $SettingData = New-CimInstance -Namespace root/virtualization/v2 -ClassName Msvm_VirtualHardDiskSettingData
-    # $SettingData.ElementName = '\\svstore01\vms\Virtual Hard Disks\ndwin10test.vhdx'
-    # $SettingData.Path = '\\svstore01\vms\Virtual Hard Disks\ndwin10test.vhdx'
-    # $SettingData.ElementName = ''
-    # $SettingData.Type = 4
-    # $Result = Invoke-CimMethod -InputObject $VHDService -Arguments @{SettingData=$SettingData} -MethodName CreateVirtualHardDisk
     function Create-VMCheckpointDiskChain
     {
         param(
-            [Parameter()][Microsoft.HyperV.PowerShell.VMSnapshot[]]$CheckpointList,
+            [Parameter()][Object[]]$CheckpointList,
             [Parameter()][System.Guid]$ParentID,
-            [Parameter()][Microsoft.HyperV.PowerShell.VirtualMachine]$VM = $null
+            [Parameter()][Microsoft.HyperV.PowerShell.VirtualMachine]$VMObject = $null
         )
-        $CP = Get-VMCheckpoint -Id $ParentID
+        Write-Verbose 'here'
+        $CP = Get-VMSnapshot -Id $ParentID
         Write-Verbose -Message ('Parent is {0}' -f $CP.Name)
         $ParentDisks = @(Get-VMHardDiskDrive -VMSnapshot ($CheckpointList | Where-Object -Property Id -eq $ParentID))
         $ParentDisks = Sort-Object -InputObject $ParentDisks -Property ControllerType, ControllerLocation, ControllerNumber
-        if($VM)
+        if($VMObject)
         {
-            $Children = @($VM)
+            $Children = @($VMObject)
         }
         else
         {
@@ -41,9 +36,9 @@ begin {
         foreach($Child in $Children)
         {
             $DiskParams = @()
-            if($VM)
+            if($VMObject)
             {
-                $DiskParams = @{VM = $VM}
+                $DiskParams = @{VM = $VMObject}
             }
             else
             {
@@ -79,10 +74,12 @@ begin {
                         Write-Verbose -Message ('{0} does NOT exist' -f $TemporaryParentPath)
                     }
                     $NewDisk = New-VHD -ParentPath $TemporaryParentPath -Path ($ChildDisk.Path -replace 'avhdx', 'vhdx')
-                    Write-Verbose -Message ('Renaming child disk {0} to checkpoint disk {1}' -f $NewDisk.Path, $TargetDiskFileName)
-                    Rename-Item -Path $NewDisk.Path -NewName $TargetDiskFileName
                     Write-Verbose -Message ('Restoring parent disk name from {0} to {1}' -f $TemporaryParentPath, $PermanentParentFileName)
                     Rename-Item -Path $TemporaryParentPath -NewName $PermanentParentFileName
+                    Write-Verbose -Message ('Setting parent disk of {0} to {1}' -f $NewDisk.Path, $ParentDisk.Path)
+                    Set-VHD -Path $NewDisk.Path -ParentPath $ParentDisk.Path
+                    Write-Verbose -Message ('Renaming child disk {0} to checkpoint disk {1}' -f $NewDisk.Path, $TargetDiskFileName)
+                    Rename-Item -Path $NewDisk.Path -NewName $TargetDiskFileName
                 }
             }
             Create-VMCheckpointDiskChain -CheckpointList $CheckpointList -ParentID $Child.Id
@@ -91,19 +88,19 @@ begin {
 }
 
 process {
+    $VMObject = $VM
     if($VMName)
     {
-        $VM = Get-VM -Name $VMName
+        $VMObject = Get-VM -Name $VMName
     }
-    if(-not $VM)
+    if(-not $VMObject)
     {
         Write-Error -Message 'Specified VM not found'
     }
     Write-Verbose -Message 'Loading checkpoints'
-    $Checkpoints = @(Get-VMCheckpoint -VM $VM)
+    $Checkpoints = @(Get-VMSnapshot -VM $VMObject)
     $RootCheckpoint = $Checkpoints | Where-Object -Property ParentCheckpointId -EQ $null
-    $RootCheckpoint
     Create-VMCheckpointDiskChain -CheckpointList $Checkpoints -ParentID $RootCheckpoint.Id
-    Create-VMCheckpointDiskChain -CheckpointList $Checkpoints -ParentID $VM.ParentCheckpointId -VM $VM
-    Remove-VMCheckpoint -VM $VM -IncludeAllChildSnapshots -Confirm:$false
+    Create-VMCheckpointDiskChain -CheckpointList $Checkpoints -ParentID $VMObject.ParentCheckpointId -VM $VMObject
+    Remove-VMSnapshot -VM $VM -IncludeAllChildSnapshots -Confirm:$false
 }
