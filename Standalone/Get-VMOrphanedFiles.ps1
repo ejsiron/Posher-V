@@ -139,7 +139,7 @@ param(
 
 BEGIN
 {
-    $ErrorActionPreference = [System.Management.Automation.ActionPreference]::Stop
+   $ErrorActionPreference = [System.Management.Automation.ActionPreference]::Stop
 	######################### Script block definitions ###############################
 	$VMFilePathsScriptBlock = {
 		param(
@@ -147,7 +147,8 @@ BEGIN
 			[Parameter(Position=1)][Boolean]$ReturnVMPaths,
 			[Parameter(Position=2)][System.Management.Automation.ActionPreference]$RemoteVerbosePreference = [System.Management.Automation.ActionPreference]::SilentlyContinue
         )
-        $ErrorActionPreference = [System.Management.Automation.ActionPreference]::Stop
+      
+      $ErrorActionPreference = [System.Management.Automation.ActionPreference]::Stop
 		function Parse-LocalOrSharedVMFilePath
 		{
 			param(
@@ -430,13 +431,13 @@ BEGIN
 				$DiskFileList += (Get-VMFloppyDiskDrive -VM $VM).Path
 			}
 		}
-		$MetaFileList | foreach {
+		$MetaFileList | ForEach-Object -Process {
 			if(-not [String]::IsNullOrEmpty($_))
 			{
 				$FileList += Parse-LocalOrSharedVMFilePath -VMHost $VMHostName -ItemType 'metafile' -PathOrFile $_
 			}
 		}
-		$DiskFileList | foreach {
+		$DiskFileList | ForEach-Object -Process {
 			if(-not [String]::IsNullOrEmpty($_))
 			{
 				$FileList += Parse-LocalOrSharedVMFilePath -VMHost $VMHostName -ItemType 'disk' -PathOrFile $_
@@ -449,93 +450,82 @@ BEGIN
 				$FileList += Parse-LocalOrSharedVMFilePath -VMHost $VMHostName -ItemType 'path' -PathOrFile $ThisVMSLPPath -VMNameToRemove $_.Name
 			}
 		}
-		$FileList | select -Unique
+		$FileList | Select-Object -Unique
 	}
 
 	$SearchScriptBlock = {
 		param
 		(
-			[Parameter(Position=0)][String[]]$SearchPaths,
-			[Parameter(Position=1)][String[]]$FileExclusions,
-			[Parameter(Position=2)][String[]]$DiskExclusions,
-			[Parameter(Position=3)][Boolean]$SkipCSVs
-        )
-        $ErrorActionPreference = [System.Management.Automation.ActionPreference]::Stop
-		function Escape-Path {
+			[Parameter(Position = 0)][String[]]$SearchPaths,
+			[Parameter(Position = 1)][String[]]$FileExclusions,
+			[Parameter(Position = 2)][String[]]$DiskExclusions,
+			[Parameter(Position = 3)][Boolean]$SkipCSVs
+		)
+		$ErrorActionPreference = [System.Management.Automation.ActionPreference]::Stop
+		function Escape-Path
+		{
 			param(
 				[Parameter()][String]$Path
 			)
-			try {
-				$ReturnPath = (Resolve-Path -Path $Path -ErrorAction Stop).Path
-				$ReturnPath -replace "\\", "\\"	# This is not a typo. This turns single backslashes into double backslashes. I promise.
-			}
-			catch
-			{
-				# just means the path wasn't there
-			}
+				$Path -replace '\\', '\\'	# This is not a typo. This turns single backslashes into double backslashes. I promise.
 		}
-		$LocalClusterStorage = (Escape-Path -Path "$($env:SystemDrive)\ClusterStorage")
+		$LocalClusterStorage = Escape-Path -Path (Join-Path -Path $env:SystemDrive -ChildPath 'ClusterStorage')
 		$DirectoryExclusions = @(
-			(Escape-Path -Path "$($env:SystemRoot)\Vss"),	# vss writers are also registered as <guid>.xml
-			(Escape-Path -Path "$($env:SystemRoot)\WinSxs"),	# many things in here will trigger a response
-			(Escape-Path -Path "$($env:ProgramData)\Microsoft\Windows\Hyper-V\Resource Types")	# HV resource types are also registered as <guid>.xml
+			(Escape-Path -Path (Join-Path -Path $env:SystemRoot -ChildPath 'vss')),								# VSS writers are also registered as <guid>.xml
+			(Escape-Path -Path (Join-Path -Path $env:SystemRoot -ChildPath 'WinSxs')),							# many things in WinSxs will trigger a response, also it takes forever to scan
+			(Escape-Path -Path (Join-Path -Path $env:ProgramData -ChildPath 'Microsoft\Windows\Hyper-V\Resource Types'))	# HV resource types are also registered as <guid>.xml
 		)
-		if($SkipCSVs)
+		if ($SkipCSVs)
 		{
 			$DirectoryExclusions += $LocalClusterStorage
 		}
-		foreach($SearchPath in $SearchPaths)
+		foreach ($SearchPath in $SearchPaths)
 		{
-			try	# because Test-Path doesn't work on raw volume identifiers, that's why
-			{
-				Get-ChildItem -Path $SearchPath -ErrorAction Stop | Out-Null
-				$PathFound = $true
-			}
-			catch
-			{
-				$PathFound = $false
-			}
-			if($PathFound)
-			{
+			try
+			{	# We enclose this segment in a try block because of Get-ChildItem. Test-Path does not work on raw volume identifiers, but GCI does. If the path does not exist or we do not have access, the catch block will deal with it. Take note that the script has set ErrorActionPreference to Stop.
 				$CompareGUID = New-Object System.Guid
 				Get-ChildItem -File -Path $SearchPath -Recurse |
-					where {
-						# first, parse the extension for virtual hard/floppy disk files as that is the fastest of possible operations
-						if($_.Extension -match "v(h|f)d")
+				where {
+					# first, parse the extension for virtual hard/floppy disk files as that is the fastest of possible operations
+					if ($_.Extension -match "v(h|f)d")
+					{
+						if ($SkipCSVs -and $_.DirectoryName -match $LocalClusterStorage)
 						{
-							if($SkipCSVs -and $_.DirectoryName -match $LocalClusterStorage)
+							$false
+						}
+						elseif ($DiskExclusions -notcontains $_.FullName.ToLower())
+						{
+							$true
+						}
+					}
+					elseif ($_.Extension -match "xml|bin|vsv")
+					{
+						$InExcludedDirectory = $false
+						$DirectoryName = $_.DirectoryName
+						$DirectoryExclusions |
+						foreach {
+							if ($DirectoryName -match $_)
 							{
-								$false
-							}
-							elseif($DiskExclusions -notcontains $_.FullName.ToLower())
-							{
-								$true
+								$InExcludedDirectory = $true
 							}
 						}
-						elseif($_.Extension -match "xml|bin|vsv")
+						if (-not $InExcludedDirectory)
 						{
-							$InExcludedDirectory = $false
-							$DirectoryName = $_.DirectoryName
-							$DirectoryExclusions |
-							foreach {
-								if($DirectoryName -match $_)
-								{
-									$InExcludedDirectory = $true
-								}
-							}
-							if(-not $InExcludedDirectory)
+							#VM files of this type will all be formatted as a GUID
+							if ([System.Guid]::TryParse($_.BaseName, [ref]$CompareGUID))
 							{
-								#VM files of this type will all be formatted as a GUID
-								if([System.Guid]::TryParse($_.BaseName, [ref]$CompareGUID))
+								if ($FileExclusions -notcontains $_.FullName.ToLower())
 								{
-									if($FileExclusions -notcontains $_.FullName.ToLower())
-									{
-										$true
-									}
+									$true
 								}
 							}
 						}
 					}
+				}
+			}
+			catch
+			{
+				$PathFound = $false
 			}
 		}
 	}
