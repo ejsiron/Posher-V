@@ -112,7 +112,7 @@ C:\PS> .\Get-VMOrphanedFiles -ComputerName svhv1, svhv2 -Path -Credential (Get-C
 param(
 	[Alias('Host', 'HostName', 'VMHosts', 'Hosts', 'VMHost')]
 	[Parameter(ValueFromPipeline=$true, ValueFromPipelineByPropertyName=$true)]
-	[Object[]]$ComputerName=@(,$env:COMPUTERNAME),
+	[Object[]]$ComputerName=@($env:COMPUTERNAME),
 
 	[Alias("VirtualMachinePath")]
 	[Parameter(ValueFromPipeline=$true, ValueFromPipelinebyPropertyName=$true,ParameterSetName='SpecifiedPath')]
@@ -139,7 +139,7 @@ param(
 
 BEGIN
 {
-   $ErrorActionPreference = [System.Management.Automation.ActionPreference]::Stop
+	$ErrorActionPreference = [System.Management.Automation.ActionPreference]::Stop
 	######################### Script block definitions ###############################
 	$VMFilePathsScriptBlock = {
 		param(
@@ -147,8 +147,8 @@ BEGIN
 			[Parameter(Position=1)][Boolean]$ReturnVMPaths,
 			[Parameter(Position=2)][System.Management.Automation.ActionPreference]$RemoteVerbosePreference = [System.Management.Automation.ActionPreference]::SilentlyContinue
         )
-      
-      $ErrorActionPreference = [System.Management.Automation.ActionPreference]::Stop
+
+		$ErrorActionPreference = [System.Management.Automation.ActionPreference]::Stop
 		function Parse-LocalOrSharedVMFilePath
 		{
 			param(
