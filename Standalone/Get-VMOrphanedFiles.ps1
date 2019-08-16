@@ -110,7 +110,7 @@ C:\PS> .\Get-VMOrphanedFiles -ComputerName svhv1, svhv2 -Path -Credential (Get-C
 
 [CmdletBinding(DefaultParameterSetName = 'UnspecifiedPath')]
 param(
-	[Alias('Host', 'HostName', 'VMHosts', 'Hosts', 'VMHost')]
+	[Alias('Host', 'HostName', 'VMHost')]
 	[Parameter(ValueFromPipeline = $true, ValueFromPipelineByPropertyName = $true)]
 	[Object[]]$ComputerName = @($env:COMPUTERNAME),
 
@@ -182,7 +182,8 @@ BEGIN
 			{
 				$PathOrFile = $PathOrFile -replace "$VMNameToRemove\\?$"	# lop off any remote path
 			}
-			[String]::Join(';', ($HostPrefix, $ItemType, $PathOrFile))
+			#[String]::Join(';', ($HostPrefix, $ItemType, $PathOrFile))
+			@{'HostPrefix' = $HostPrefix; 'Item' = $PathOrFile; 'ItemType' = $ItemType }
 		}
 
 		function Get-DifferencingChain
@@ -256,11 +257,11 @@ BEGIN
 		}
 		if ($ReturnDefaultPaths)
 		{
-			$FileList += Parse-LocalOrSharedVMFilePath -VMHost $VMHostName -ItemType $ThisHostVMPathType -PathOrFile $VMHostData.VirtualMachinePath
+			$OutNull = $FileList.Add((Parse-LocalOrSharedVMFilePath -VMHost $VMHostName -ItemType $ThisHostVMPathType -PathOrFile $VMHostData.VirtualMachinePath))
 			Write-Verbose -Message ('{0} added to scan paths' -f $VMHostData.VirtualMachinePath)
-			$FileList += Parse-LocalOrSharedVMFilePath -VMHost $VMHostName -ItemType $ThisHostVMHDType -PathOrFile $VMHostData.VirtualHardDiskPath
+			$OutNull = $FileList.Add((Parse-LocalOrSharedVMFilePath -VMHost $VMHostName -ItemType $ThisHostVMHDType -PathOrFile $VMHostData.VirtualHardDiskPath))
 			Write-Verbose -Message ('{0} added to scan paths' -f $VMHostData.VirtualHardDiskPath)
-			$FileList += Parse-LocalOrSharedVMFilePath -VMHost $VMHostName -ItemType 'path' -PathOrFile $HostHVRegistrationPath
+			$OutNull = $FileList.Add((Parse-LocalOrSharedVMFilePath -VMHost $VMHostName -ItemType 'path' -PathOrFile $HostHVRegistrationPath))
 			Write-Verbose -Message ('{0} added to scan paths' -f $HostHVRegistrationPath)
 		}
 		$ClusterStoragePath = Join-Path -Path $env:SystemDrive -ChildPath 'ClusterStorage'
@@ -269,10 +270,12 @@ BEGIN
 			Write-Verbose -Message 'Enumerating cluster shared volumes'
 			foreach ($CSVPath in (Get-ChildItem -Path $ClusterStoragePath -ErrorAction Continue))
 			{
-				$FileList += Parse-LocalOrSharedVMFilePath -VMHost $VMHostName -ItemType 'path' -PathOrFile $CSVPath.FullName
+				$OutNull = $FileList.Add((Parse-LocalOrSharedVMFilePath -VMHost $VMHostName -ItemType 'path' -PathOrFile $CSVPath.FullName))
 				Write-Verbose -Message ('{0} added to scan paths' -f $CSVPath.FullName)
 			}
 		}
+
+		Write-Verbose -Message 'Loading virtual machines...'
 		foreach ($VM in Hyper-V\Get-VM)
 		{
 			Write-Verbose -Message ('Collecting file list for VM "{0}"' -f $VM.Name)
@@ -997,7 +1000,7 @@ PROCESS
 	switch ($PSCmdlet.ParameterSetName)
 	{
 		'SpecifiedPath'
-  {
+		{
 			$UseDefaultPath = $IncludeDefaultPath
 			$UseExistingVMPaths = $IncludeExistingVMPaths
 		}
@@ -1139,7 +1142,7 @@ PROCESS
 			switch ($SharedItemType)
 			{
 				{ 'configuration' -or 'snapshot' }
-    {
+				{
 					$SharedMetaFileExclusions += (Get-ChildItem -File -Path $SharedPath -Recurse -Filter "$VMId.xml").FullName
 					$SharedMetaFileExclusions += (Get-ChildItem -File -Path $SharedPath -Recurse -Filter "$VMId.bin").FullName
 					$SharedMetaFileExclusions += (Get-ChildItem -File -Path $SharedPath -Recurse -Filter "$VMId.vsv").FullName
