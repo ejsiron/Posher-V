@@ -150,13 +150,14 @@ BEGIN
 		)
 
 		$ErrorActionPreference = [System.Management.Automation.ActionPreference]::Stop
+		
 		function Parse-LocalOrSharedVMFilePath
 		{
 			param(
 				[Parameter()][String]$VMHost = '',
 				[Parameter()][String]$ItemType, # 'path' for a file-system path, 'shared' for a UNC, 'metafile' for a non-disk VM file, 'disk' for a VM disk file
 				[Parameter()][String]$PathOrFile,	# this is the item that will be operated on
-				[Parameter()][String]$VMNameToRemove = '',	# if provided, it will be removed from the end of an item (usually to find the parent)
+				[Parameter()][String]$VMNameToRemove = '',	# if provided, this will be removed from the end of an item (usually to find the parent)
 				[Parameter()][String]$VMId = $null
 			)
 
@@ -323,9 +324,9 @@ BEGIN
 			}
 			else
 			{
-				$MetaFileList += (Get-ChildItem -File -Path $ThisVMConfigurationPath -Recurse -Filter "$ThisVMId.xml").FullName
-				$MetaFileList += (Get-ChildItem -File -Path $ThisVMConfigurationPath -Recurse -Filter "$ThisVMId.bin").FullName
-				$MetaFileList += (Get-ChildItem -File -Path $ThisVMConfigurationPath -Recurse -Filter "$ThisVMId.vsv").FullName
+				$OutNull = $MetaFileList.Add((Get-ChildItem -File -Path $ThisVMConfigurationPath -Recurse -Filter "$ThisVMId.xml").FullName)
+				$OutNull = $MetaFileList.Add((Get-ChildItem -File -Path $ThisVMConfigurationPath -Recurse -Filter "$ThisVMId.bin").FullName)
+				$OutNull = $MetaFileList.Add((Get-ChildItem -File -Path $ThisVMConfigurationPath -Recurse -Filter "$ThisVMId.vsv").FullName)
 			}
 			# Get snapshot files
 			Write-Verbose -Message ('Adding checkpoint files for "' + $VM.Name + '" to scan list')
@@ -340,7 +341,7 @@ BEGIN
 			}
 			Get-VMSnapshot -VM $VM | ForEach-Object -Process {
 				Write-Verbose -Message ('Adding checkpoint files for "' + $VM.Name + '" with ID: "' + $_.Id + '" to scan list')
-				$MetaFileList += (Get-ChildItem -File -Path $HostHVRegistrationPath -Recurse -Filter "$($_.Id).xml").FullName
+				$MetaFileList.Add((Get-ChildItem -File -Path $HostHVRegistrationPath -Recurse -Filter "$($_.Id).xml").FullName)
 				if ($ThisVMSnapshotPathShared)
 				{
 					$SharedFileList += [String]::Join(",", ($ThisVMSnapshotPath, $_.Id, 'snapshot'))
@@ -348,10 +349,12 @@ BEGIN
 				else
 				{
 					$SnapshotID = $_.Id
+					$VMMetaFiles = Get-ChildItem -File -Path $SnapshotRoot -Recurse -Filter ('{0}.*', $SnapshotID)
 					foreach ($MetafileExtension in @('xml', 'vsv', 'bin', 'vmcx', 'vmgs', 'vmrs'))
 					{
 						$Filter = '{0}.{1}' -f $SnapshotID, $MetafileExtension
-                        
+						# working here -- need to grab the items we want from $VMMetaFiles
+						$OutNull = $MetaFileList.Add((Get-ChildItem -File -Path $SnapshotRoot -Recurse -Filter ('{0}.{1}' -f $SnapshotID, $MetafileExtension)).FullName)
 					}
 					$MetaFileList += (Get-ChildItem -File -Path $SnapshotRoot -Recurse -Filter "$($_.Id).xml").FullName
 					$MetaFileList += (Get-ChildItem -File -Path $SnapshotRoot -Recurse -Filter "$($_.Id).vsv").FullName
