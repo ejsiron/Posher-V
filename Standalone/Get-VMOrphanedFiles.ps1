@@ -275,6 +275,8 @@ BEGIN
 				Write-Verbose -Message ('{0} added to scan paths' -f $CSVPath.FullName)
 			}
 		}
+
+		Write-Verbose -Message 'Loading virtual machines...'
 		foreach ($VM in Hyper-V\Get-VM)
 		{
 			Write-Verbose -Message ('Collecting file list for VM "{0}"' -f $VM.Name)
@@ -1001,7 +1003,7 @@ PROCESS
 	switch ($PSCmdlet.ParameterSetName)
 	{
 		'SpecifiedPath'
-  {
+		{
 			$UseDefaultPath = $IncludeDefaultPath
 			$UseExistingVMPaths = $IncludeExistingVMPaths
 		}
@@ -1143,7 +1145,7 @@ PROCESS
 			switch ($SharedItemType)
 			{
 				{ 'configuration' -or 'snapshot' }
-    {
+				{
 					$SharedMetaFileExclusions += (Get-ChildItem -File -Path $SharedPath -Recurse -Filter "$VMId.xml").FullName
 					$SharedMetaFileExclusions += (Get-ChildItem -File -Path $SharedPath -Recurse -Filter "$VMId.bin").FullName
 					$SharedMetaFileExclusions += (Get-ChildItem -File -Path $SharedPath -Recurse -Filter "$VMId.vsv").FullName
