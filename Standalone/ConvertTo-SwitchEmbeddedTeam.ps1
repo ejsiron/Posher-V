@@ -46,9 +46,6 @@
 
 .PARAMETER Notes
 	A note to associate with the converted switch(es). If not specified, uses the same setting as the original LBFO+switch or the default if UseDefaults is set.
-
-.PARAMETER CimSession
-	Runs the cmdlet in a remote session or on a remote computer. Enter a computer name or a session object, such as the output of a New-CimSession or Get-CimSession cmdlet. The default is the current session on the local computer.
 #>
 
 #requires -Module Hyper-V
@@ -63,26 +60,37 @@ param(
 	[Parameter()][Switch]$EnableIOV,
 	[Parameter()][Switch]$EnablePacketDirect,
 	[Parameter()][Microsoft.HyperV.PowerShell.VMSwitchBandwidthMode]$MinimumBandwidthMode = [Microsoft.HyperV.PowerShell.VMSwitchBandwidthMode]::Absolute,
-	[Parameter()][String]$Notes = '',
-	[Parameter()][Microsoft.Management.Infrastructure.CimSession]$CimSession
+	[Parameter()][String]$Notes = ''
 )
 
 BEGIN
 {
 	$ErrorActionPreference = [System.Management.Automation.ActionPreference]::Stop
-	$CimSessionParam = @{ }
-	if ($CimSession)
+	
+	function New-NetAdapterObjectPack
 	{
-		$CimSessionParam = @{CimSession = $CimSession }
-	}
+		param(
+			[Parameter(Mandatory=$true)][Microsoft.HyperV.PowerShell.VMInternalNetworkAdapter]$VNIC
+		)
+		$ObjectPack = New-Object psobject
+		Add-Member -InputObject $ObjectPack -Name VnicData -TypeName Microsoft.HyperV.PowerShell.VMInternalNetworkAdapter -Value $VNIC
+		Add-Member -InputObject $ObjectPack -Name VlanData -TypeName Microsoft.HyperV.PowerShell.VMInternalNetworkAdapter -Value (
+			Get-VMNetworkAdapterVlan -ManagementOS -VMNetworkAdapterName $VNIC.Name
+			)
+		Add-Member -InputObject $ObjectPack
 
+	}
+}
+
+PROCESS
+{
 	$Switches = New-Object System.Collections.ArrayList
 
-	switch ($PSCmdlet.ParameterSetName)
+	switch (PSCmdlet.ParameterSetName)
 	{
 		'ByID'
 		{
-			$Switches.AddRange($Id.ForEach({ Get-VMSwitch -Id $_ @CimSessionParam }))
+			$Switches.AddRange($Id.ForEach({ Get-VMSwitch -Id $_ }))
 		}
 		'BySwitchObject'
 		{
@@ -94,11 +102,11 @@ BEGIN
 			$NameList.AddRange($Name.ForEach({ $_.Trim() }))
 			if ($NameList.Contains('') -or $NameList.Contains('*'))
 			{
-				$Switches = Get-VMSwitch @CimSessionParam
+				$Switches = Get-VMSwitch
 			}
 			else
 			{
-				$Switches.AddRange($NameList.ForEach({ Get-VMSwitch -Name $_ @CimSessionParam }))
+				$Switches.AddRange($NameList.ForEach({ Get-VMSwitch -Name $_ }))
 			}
 		}
 	}
@@ -112,10 +120,45 @@ BEGIN
 		}
 		Write-Error -Message $SwitchNameMismatchMessage
 	}
-	$Switches
-}
+	for($i = 0; $i -lt $Switches.Count; $i++)
+	{
+		Write-Verbose -Message ('Verifying that switch "{0}" is external' -f $Switches[$i].Name)
+		if($Switches[$i].SwitchType -ne [Microsoft.HyperV.PowerShell.VMSwitchType]::External)
+		{
+			Write-Warning -Message ('Switch "{0}" is not external, skipping' -f $Switches[$i].Name)
+			continue
+		}
 
-PROCESS
-{
-	
+		Write-Verbose -Message ('Verifying that switch "{0}" is not already a SET' -f $Switches[$i].Name)
+		if(-not $Switches[$i].EmbeddedTeamingEnabled)
+		{
+			Write-Warning -Message ('Switch "{0}" already uses SET, skipping' -f $Switches[$i].Name)
+			continue
+		}
+
+		Write-Verbose -Message ('Verifying that switch "{0}" uses a standard team' -f $Switches[$i].Name)
+		$AttachedAdapter = Get-NetAdapter -InterfaceDescription $Switches[$i].NetAdapterInterfaceDescription
+		$TeamCIMAdapter = Get-CimInstance -Namespace root/StandardCimv2 -ClassName MSFT_NetLbfoTeamNic -Filter ('InstanceID="{{{0}}}"' -f ($Switches[$i].NetAdapterInterfaceGuid).Guid.ToUpper())
+		if($TeamCIMAdapter -eq $null)		
+		{
+			Write-Warning -Message ('Switch "{0}" does not use a team, skipping' -f $Switches[$i].Name)
+			continue
+		}
+		if($TeamCIMAdapter.VlanID)
+		{
+			Write-Warning -Message ('Switch "{0}" is bound to a team NIC with a VLAN assignment, skipping' -f $Switches[$i].Name)
+			continue
+		}
+
+		Write-Verbose -Message 'Loading team'
+		$Team = Get-NetLbfoTeam -TeamNicForTheTeam $TeamCIMAdapter
+		
+		Write-Verbose -Message 'Loading VM adapters connected to this switch'
+		$GuestVNICs = Get-VMNetworkAdapter -VMName * | Where-Object -Property SwitchName -EQ $Switches[$i].Name
+
+		Write-Verbose -Message 'Loading management adapters connected to this switch'
+		$HostVNICs = Get-VMNetworkAdapter -ManagementOS -SwitchName $Switches[$i].Name
+
+
+	}
 }
