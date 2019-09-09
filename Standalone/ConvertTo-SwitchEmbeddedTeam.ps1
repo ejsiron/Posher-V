@@ -65,22 +65,36 @@ param(
 
 BEGIN
 {
+	Set-StrictMode -Version Latest
 	$ErrorActionPreference = [System.Management.Automation.ActionPreference]::Stop
 	
 	function New-NetAdapterObjectPack
 	{
 		param(
-			[Parameter(Mandatory=$true)][Microsoft.HyperV.PowerShell.VMInternalNetworkAdapter]$VNIC
+			[Parameter(Mandatory = $true)][Microsoft.HyperV.PowerShell.VMInternalNetworkAdapter]$VNIC
 		)
 		$ObjectPack = New-Object psobject
 		Add-Member -InputObject $ObjectPack -Name VnicData -TypeName Microsoft.HyperV.PowerShell.VMInternalNetworkAdapter -Value $VNIC
-		Add-Member -InputObject $ObjectPack -Name VlanData -TypeName Microsoft.HyperV.PowerShell.VMInternalNetworkAdapter -Value (
-			Get-VMNetworkAdapterVlan -ManagementOS -VMNetworkAdapterName $VNIC.Name
-			)
+		Add-Member -InputObject $ObjectPack -Name VlanData -TypeName Microsoft.HyperV.PowerShell.VMNetworkAdapterVlanSetting -Value (
+			Get-VMNetworkAdapterVlan -ManagementOS -VMNetworkAdapter $VNIC
+		)
 		Add-Member -InputObject $ObjectPack
 
 	}
 }
+
+# DHCP or no
+# IP
+# gateways
+# DNS addresses
+# DNS search suffixes
+# DNS suffixes
+# Register
+# Use suffix in registration
+# WINS
+# LMHOSTS
+# NetBIOS over TCP/IP
+
 
 PROCESS
 {
@@ -120,17 +134,17 @@ PROCESS
 		}
 		Write-Error -Message $SwitchNameMismatchMessage
 	}
-	for($i = 0; $i -lt $Switches.Count; $i++)
+	for ($i = 0; $i -lt $Switches.Count; $i++)
 	{
 		Write-Verbose -Message ('Verifying that switch "{0}" is external' -f $Switches[$i].Name)
-		if($Switches[$i].SwitchType -ne [Microsoft.HyperV.PowerShell.VMSwitchType]::External)
+		if ($Switches[$i].SwitchType -ne [Microsoft.HyperV.PowerShell.VMSwitchType]::External)
 		{
 			Write-Warning -Message ('Switch "{0}" is not external, skipping' -f $Switches[$i].Name)
 			continue
 		}
 
 		Write-Verbose -Message ('Verifying that switch "{0}" is not already a SET' -f $Switches[$i].Name)
-		if(-not $Switches[$i].EmbeddedTeamingEnabled)
+		if (-not $Switches[$i].EmbeddedTeamingEnabled)
 		{
 			Write-Warning -Message ('Switch "{0}" already uses SET, skipping' -f $Switches[$i].Name)
 			continue
@@ -139,12 +153,12 @@ PROCESS
 		Write-Verbose -Message ('Verifying that switch "{0}" uses a standard team' -f $Switches[$i].Name)
 		$AttachedAdapter = Get-NetAdapter -InterfaceDescription $Switches[$i].NetAdapterInterfaceDescription
 		$TeamCIMAdapter = Get-CimInstance -Namespace root/StandardCimv2 -ClassName MSFT_NetLbfoTeamNic -Filter ('InstanceID="{{{0}}}"' -f ($Switches[$i].NetAdapterInterfaceGuid).Guid.ToUpper())
-		if($TeamCIMAdapter -eq $null)		
+		if ($TeamCIMAdapter -eq $null)		
 		{
 			Write-Warning -Message ('Switch "{0}" does not use a team, skipping' -f $Switches[$i].Name)
 			continue
 		}
-		if($TeamCIMAdapter.VlanID)
+		if ($TeamCIMAdapter.VlanID)
 		{
 			Write-Warning -Message ('Switch "{0}" is bound to a team NIC with a VLAN assignment, skipping' -f $Switches[$i].Name)
 			continue
