@@ -104,23 +104,23 @@ PROCESS
 	{
 		'ByID'
 		{
-			$Switches.AddRange($Id.ForEach({ Get-VMSwitch -Id $_ }))
+			$Switches.AddRange($Id.ForEach( { Get-VMSwitch -Id $_ }))
 		}
 		'BySwitchObject'
 		{
-			$Switches.AddRange($VMSwitch.ForEach({ $_ }))
+			$Switches.AddRange($VMSwitch.ForEach( { $_ }))
 		}
 		default	# ByName
 		{
 			$NameList = New-Object System.Collections.ArrayList
-			$NameList.AddRange($Name.ForEach({ $_.Trim() }))
+			$NameList.AddRange($Name.ForEach( { $_.Trim() }))
 			if ($NameList.Contains('') -or $NameList.Contains('*'))
 			{
 				$Switches = Get-VMSwitch
 			}
 			else
 			{
-				$Switches.AddRange($NameList.ForEach({ Get-VMSwitch -Name $_ }))
+				$Switches.AddRange($NameList.ForEach( { Get-VMSwitch -Name $_ }))
 			}
 		}
 	}
@@ -150,10 +150,11 @@ PROCESS
 			continue
 		}
 
+		# msvm_internalethernetport to msvm_lanendpoint; Name links to adapter guid
 		Write-Verbose -Message ('Verifying that switch "{0}" uses a standard team' -f $Switches[$i].Name)
 		$AttachedAdapter = Get-NetAdapter -InterfaceDescription $Switches[$i].NetAdapterInterfaceDescription
 		$TeamCIMAdapter = Get-CimInstance -Namespace root/StandardCimv2 -ClassName MSFT_NetLbfoTeamNic -Filter ('InstanceID="{{{0}}}"' -f ($Switches[$i].NetAdapterInterfaceGuid).Guid.ToUpper())
-		if ($TeamCIMAdapter -eq $null)		
+		if ($TeamCIMAdapter -eq $null)
 		{
 			Write-Warning -Message ('Switch "{0}" does not use a team, skipping' -f $Switches[$i].Name)
 			continue
