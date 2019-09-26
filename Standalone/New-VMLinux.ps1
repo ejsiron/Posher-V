@@ -37,26 +37,31 @@ The maximum amount of memory to assign to the VM. Uses 1GB if not specified.
 The size of the virtual hard disk. Defaults to 40GB if not specified.
 .NOTES
 Must run directly on a Hyper-V host.
-v1.1, July 30, 2019
+v1.1.1, September 25, 2019
+.EXAMPLE
+C:\Scripts\New-VMLinux -VMName svlcentos
+
+Create a VM named "svlcentos" that uses all defaults.
+
 .EXAMPLE
 C:\Scripts\New-VMLinux -VMName svlcentos -InstallISOPath \\storage\isos\CentOS-7-x86_64-DVD-1810.iso
 
-Create a VM named "CentOS" that starts up to the CentOS ISO
+Create a VM named "svlcentos" that starts up to the CentOS ISO
 
 .EXAMPLE
 C:\Scripts\New-VMLinux -VMName svlcentos -InstallISOPath \\storage\isos\CentOS-7-x86_64-DVD-1810.iso -Cluster
 
-Same as example 1, adding to the cluster
+Same as example 2, adding to the cluster
 
 .EXAMPLE
 C:\Scripts\New-VMLinux -VMName svlcentos -InstallISOPath \\storage\isos\CentOS-7-x86_64-DVD-1810.iso -Cluster -VHDXSizeBytes 60GB
 
-Same as example 2, overriding the VHDX size
+Same as example 3, overriding the VHDX size
 
 .LINK
 https://ejsiron.github.io/Posher-V/New-VMLinux
 #>
-[CmdletBinding(SupportsShouldProcess=$true)]
+[CmdletBinding(SupportsShouldProcess=$true,DefaultParameterSetName='DVD')]
 param
 (
     [Parameter(Mandatory=$true, Position=1)][String]$VMName,
@@ -146,7 +151,6 @@ Set-VMNetworkAdapter -VM $VM -StaticMacAddress ($VMNetAdapter.MacAddress)
 Write-Verbose -Message 'Creating the VHDX'
 $VMVHD = New-VHD -Path $VHDStoragePath -SizeBytes $VHDXSizeBytes -Dynamic -BlockSizeBytes 1MB
 Write-Verbose -Message 'Attaching the newly-created VHDX'
-#$VMVHD = Add-VMHardDiskDrive -VM $VM -ControllerType SCSI -ControllerNumber 0 -ControllerLocation 0 -Path $VHDStoragePath -Passthru
 Add-VMHardDiskDrive -VM $VM -ControllerType SCSI -ControllerNumber 0 -ControllerLocation 0 -Path $VHDStoragePath
 Write-Verbose -Message 'Configuring UEFI settings'
 $VMFirmware = Set-VMFirmware -VM $VM -EnableSecureBoot On -SecureBootTemplate 'MicrosoftUEFICertificateAuthority' -Passthru

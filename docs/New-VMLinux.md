@@ -29,19 +29,25 @@ Makes the following Linux-friendly modifications to the VM:
 
 ## EXAMPLES
 
-### Example 1: Create a VM named "CentOS" that starts up to the CentOS ISO
+### Example 1: Create a VM named "svlcentos" that starts up to the CentOS ISO
+
+```PowerShell
+New-VMLinux -VMName svlcentos
+```
+
+### Example 2: Create a VM named "svlcentos" that starts up to the CentOS ISO
 
 ```PowerShell
 New-VMLinux -VMName svlcentos -InstallISOPath \\storage\isos\CentOS-7-x86_64-DVD-1810.iso
 ```
 
-### Example 2: Same as example 1, adding to the cluster
+### Example 3: Same as example 2, adding to the cluster
 
 ```PowerShell
 New-VMLinux -VMName svlcentos -InstallISOPath \\storage\isos\CentOS-7-x86_64-DVD-1810.iso -Cluster
 ```
 
-### Example 3: Same as example 2, overriding the VHDX size
+### Example 4: Same as example 3, overriding the VHDX size
 
 ```PowerShell
 New-VMLinux -VMName svlcentos -InstallISOPath \\storage\isos\CentOS-7-x86_64-DVD-1810.iso -Cluster -VHDXSizeBytes 60GB
