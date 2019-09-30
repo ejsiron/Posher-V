@@ -30,15 +30,12 @@
 .PARAMETER UseDefaults
 	If specified, uses defaults for all values on the converted switch(es). If not specified, uses the same parameters as the original LBFO+switch or any manually-specified parameters.
 
-.PARAMETER EnableIOV
-	Attempts to enable SR-IOV on the converted switch(es). If not specified, uses the same setting as the original LBFO+switch or the default if UseDefaults is set.
-
-.PARAMETER EnablePacketDirect
-	Attempts to enable packet direct on the converted switch(es). If not specified, uses the same setting as the original LBFO+switch or the default if UseDefaults is set.
+.PARAMETER LoadBalancingAlgorithm
+	Sets the load balancing algorithm for the converted switch(es). If not specified, uses the same setting as the original LBFO+switch or the default if UseDefaults is set.
 
 .PARAMETER MinimumBandwidthMode
 	Sets the desired QoS mode for the converted switch(es). If not specified, uses the same setting as the original LBFO+switch or the default if UseDefaults is set.
-	
+
 	None: No network QoS
 	Absolute: minimum bandwidth values specify bits per second
 	Weight: minimum bandwidth values range from 1 to 100 and represent percentages
@@ -46,9 +43,14 @@
 
 .PARAMETER Notes
 	A note to associate with the converted switch(es). If not specified, uses the same setting as the original LBFO+switch or the default if UseDefaults is set.
+
+.PARAMETER EnablePacketDirect
+	Attempts to enable packet direct on the converted switch(es). If not specified, uses the same setting as the original LBFO+switch or the default if UseDefaults is set.
 #>
 
-#requires -Module Hyper-V
+#Requires -RunAsAdministrator
+#Requires -Module Hyper-V
+#Requires -Version 5
 
 [CmdletBinding(DefaultParameterSetName = 'ByName', ConfirmImpact = 'High')]
 param(
@@ -57,68 +59,93 @@ param(
 	[Parameter(Position = 1, ParameterSetName = 'BySwitchObject', Mandatory = $true)][Microsoft.HyperV.PowerShell.VMSwitch[]]$VMSwitch,
 	[Parameter(Position = 2)][String[]]$NewName = @(),
 	[Parameter()][Switch]$UseDefaults,
-	[Parameter()][Switch]$EnableIOV,
-	[Parameter()][Switch]$EnablePacketDirect,
-	[Parameter()][Microsoft.HyperV.PowerShell.VMSwitchBandwidthMode]$MinimumBandwidthMode = [Microsoft.HyperV.PowerShell.VMSwitchBandwidthMode]::Absolute,
-	[Parameter()][String]$Notes = ''
+	[Parameter()][Microsoft.HyperV.PowerShell.VMSwitchLoadBalancingAlgorithm]$LoadBalancingAlgorithm,
+	[Parameter()][Microsoft.HyperV.PowerShell.VMSwitchBandwidthMode]$MinimumBandwidthMode,
+	[Parameter()][String]$Notes = '',
+	[Parameter()][Switch]$EnablePacketDirect
 )
 
 BEGIN
 {
 	Set-StrictMode -Version Latest
 	$ErrorActionPreference = [System.Management.Automation.ActionPreference]::Stop
-	
-	function New-NetAdapterObjectPack
+
+	class NetAdapterDataPack
 	{
-		param(
-			[Parameter(Mandatory = $true)]$VNIC
-		)
-		
-		$VLANData = Get-VMNetworkAdapterVlan -VMNetworkAdapter $VNIC
-		$VnicCim = Get-CimInstance -Namespace root/virtualization/v2 -ClassName Msvm_InternalEthernetPort -Filter ('Name="{0}"' -f $VNIC.AdapterId)
-		$VnicLanEndpoint1 = Get-CimAssociatedInstance -InputObject $VnicCim -ResultClassName Msvm_LANEndpoint
-		$NetAdapter = Get-CimInstance -ClassName Win32_NetworkAdapter -Filter ('GUID="{0}"' -f $VnicLANEndpoint1.Name.Substring(($VnicLANEndpoint1.Name.IndexOf('{'))))
-		$NetAdapterConfiguration = Get-CimAssociatedInstance -InputObject $NetAdapter -ResultClassName Win32_NetworkAdapterConfiguration
-		$MinimumBandwidthAbsolute = 0
-		$MinimumBandwidthWeight = 0
-		$MaximumBandwidth = 0
+		[System.String]$NicName
+		[System.String]$SwitchName
+		[System.String]$MacAddress
+		[System.Int64]$MinimumBandwidthAbsolute = 0
+		[System.Int64]$MinimumBandwidthWeight = 0
+		[System.Int64]$MaximumBandwidth = 0
+		[System.Int32]$VlanId = 0
+		[Microsoft.Management.Infrastructure.CimInstance]$NetAdapterConfiguration
 
-		if ($VNIC.BandwidthSetting -ne $null)
+		NetAdapterDataPack([psobject]$VNIC)
 		{
-			$MinimumBandwidthAbsolute = $VNIC.BandwidthSetting.MinimumBandwidthAbsolute
-			$MinimumBandwidthWeight = $VNIC.BandwidthSetting.MinimumBandwidthWeight
-			$MaximumBandwidth = $VNIC.BandwidthSetting.MaximumBandwidth
+			$this.NicName = $VNIC.Name
+			$this.SwitchName = $VNIC.SwitchName
+			$this.MacAddress = $VNIC.MacAddress
+			if ($VNIC.BandwidthSetting -ne $null)
+			{
+				$this.MinimumBandwidthAbsolute = $VNIC.BandwidthSetting.MinimumBandwidthAbsolute
+				$this.MinimumBandwidthWeight = $VNIC.BandwidthSetting.MinimumBandwidthWeight
+				$this.MaximumBandwidth = $VNIC.BandwidthSetting.MaximumBandwidth
+			}
+			$VnicCim = Get-CimInstance -Namespace root/virtualization/v2 -ClassName Msvm_InternalEthernetPort -Filter ('Name="{0}"' -f $VNIC.AdapterId)
+			$VnicLanEndpoint1 = Get-CimAssociatedInstance -InputObject $VnicCim -ResultClassName Msvm_LANEndpoint
+			$NetAdapter = Get-CimInstance -ClassName Win32_NetworkAdapter -Filter ('GUID="{0}"' -f $VnicLANEndpoint1.Name.Substring(($VnicLANEndpoint1.Name.IndexOf('{'))))
+			$this.NetAdapterConfiguration = Get-CimAssociatedInstance -InputObject $NetAdapter -ResultClassName Win32_NetworkAdapterConfiguration
+			$this.VlanId = [System.Int32](Get-VMNetworkAdapterVlan -VMNetworkAdapter $VNIC).AccessVlanId
 		}
+	}
 
-		$ObjectPack = New-Object psobject
-		$OBParams = @{InputObject = $ObjectPack; MemberType = 'NoteProperty' }
-		Add-Member @OBParams -Name NicName -TypeName System.String -Value $VNIC.Name
-		Add-Member @OBParams -Name SwitchName -TypeName System.String -Value $VNIC.SwitchName
-		Add-Member @OBParams -Name MacAddress -TypeName System.String -Value $VNIC.MacAddress
-		Add-Member @OBParams -Name MinimumBandwidthAbsolute -TypeName System.Int64 -Value $MinimumBandwidthAbsolute
-		Add-Member @OBParams -Name MinimumBandwidthWeight -TypeName System.Int64 -Value $MinimumBandwidthWeight
-		Add-Member @OBParams -Name MaximumBandwidth -TypeName System.Int64 -Value $MaximumBandwidth
-		Add-Member @OBParams -Name VLANID -TypeName System.Int32 -Value $VLANData.AccessVlanId
-		Add-Member @OBParams -Name AdapterConfiguration -TypeName Microsoft.Management.Infrastructure.CimInstance -Value $NetAdapterConfiguration
+	class SwitchDataPack
+	{
+		[System.String]$Name
+		[Microsoft.HyperV.PowerShell.VMSwitchBandwidthMode]$BandwidthReservationMode
+		[System.UInt64]$DefaultFlow
+		[System.String]$TeamName
+		[System.String[]]$TeamMembers
+		[System.UInt32]$LoadBalancingAlgorithm
+		[NetAdapterDataPack[]]$HostVNICs
 
-		$ObjectPack
+		SwitchDataPack(
+			[psobject]$VSwitch,
+			[Microsoft.Management.Infrastructure.CimInstance]$Team,
+			[System.Object[]]$VNICs
+		)
+		{
+			$this.Name = $VSwitch.Name
+			$this.BandwidthReservationMode = $VSwitch.BandwidthReservationMode
+			switch($this.BandwidthReservationMode)
+			{
+				[Microsoft.HyperV.PowerShell.VMSwitchBandwidthMode]::Absolute { $this.DefaultFlow = $VSwitch.DefaultFlowMinimumBandwidthAbsolute }
+				[Microsoft.HyperV.PowerShell.VMSwitchBandwidthMode]::Weight { $this.DefaultFlow = $VSwitch.DefaultFlowMinimumBandwidthWeight }
+				default { $this.DefaultFlow = 0 }
+			}
+			$this.TeamName = $Team.Name
+			$this.TeamMembers = ((Get-CimAssociatedInstance -InputObject $Team -ResultClassName MSFT_NetLbfoTeamMember).Name)
+			$this.LoadBalancingAlgorithm = $Team.LoadBalancingAlgorithm
+			$this.HostVNICs = $VNICs
+		}
 	}
 }
 
 PROCESS
 {
-	$Switches = New-Object System.Collections.ArrayList
+	$VMSwitches = New-Object System.Collections.ArrayList
 	$HostVNICData = New-Object System.Collections.ArrayList
 
 	switch ($PSCmdlet.ParameterSetName)
 	{
 		'ByID'
 		{
-			$Switches.AddRange($Id.ForEach( { Get-VMSwitch -Id $_ }))
+			$VMSwitches.AddRange($Id.ForEach( { Get-VMSwitch -Id $_ }))
 		}
 		'BySwitchObject'
 		{
-			$Switches.AddRange($VMSwitch.ForEach( { $_ }))
+			$VMSwitches.AddRange($VMSwitch.ForEach( { $_ }))
 		}
 		default	# ByName
 		{
@@ -126,21 +153,21 @@ PROCESS
 			$NameList.AddRange($Name.ForEach( { $_.Trim() }))
 			if ($NameList.Contains('') -or $NameList.Contains('*'))
 			{
-				$Switches.AddRange(@(Get-VMSwitch))
+				$VMSwitches.AddRange(@(Get-VMSwitch))
 			}
 			else
 			{
-				$Switches.AddRange($NameList.ForEach( { Get-VMSwitch -Name $_ }))
+				$VMSwitches.AddRange($NameList.ForEach( { Get-VMSwitch -Name $_ }))
 			}
 		}
 	}
-	if ($Switches.Count)
+	if ($VMSwitches.Count)
 	{
-		$Switches = @(Select-Object -InputObject $Switches -Unique)
+		$VMSwitches = @(Select-Object -InputObject $VMSwitches -Unique)
 	}
 	else
 	{
-		throw('No virtual switches match the provided criteria')
+		throw('No virtual VMswitches match the provided criteria')
 	}
 
 	Write-Progress -Activity 'Pre-flight' -Status 'Verifying operating system version' -PercentComplete 5
@@ -151,48 +178,50 @@ PROCESS
 		throw('Switch-embedded teams not supported on host operating system versions before 2016')
 	}
 
-	Write-Progress -Activity 'Pre-flight' -Status 'Loading virtual switches' -PercentComplete 15
+	Write-Progress -Activity 'Pre-flight' -Status 'Loading virtual VMswitches' -PercentComplete 15
 
-	if ($NewName.Count -gt 0 -and $NewName.Count -ne $Switches.Count)
+	if ($NewName.Count -gt 0 -and $NewName.Count -ne $VMSwitches.Count)
 	{
-		$SwitchNameMismatchMessage = 'Switch count ({0}) does not match NewName count ({1}).' -f $Switches.Count, $NewName.Count
-		if ($NewName.Count -lt $Switches.Count)
+		$SwitchNameMismatchMessage = 'Switch count ({0}) does not match NewName count ({1}).' -f $VMSwitches.Count, $NewName.Count
+		if ($NewName.Count -lt $VMSwitches.Count)
 		{
-			$SwitchNameMismatchMessage += ' If you wish to rename some switches but not others, specify an empty string for the switches to leave.'
+			$SwitchNameMismatchMessage += ' If you wish to rename some VMswitches but not others, specify an empty string for the VMswitches to leave.'
 		}
 		throw($SwitchNameMismatchMessage)
 	}
 
 	Write-Progress -Activity 'Pre-flight' -Status 'Validating virtual switch configurations' -PercentComplete 25
-	foreach ($Switch in $Switches)
+	Write-Verbose -Message 'Validating virtual switches'
+	foreach ($VSwitch in $VMSwitches)
 	{
+		New-Variable -Name TeamAdapter
 		try
 		{
-			Write-Progress -Activity ('Validating virtual switch "{0}"' -f $Switch.Name) -Status 'Switch is external' -PercentComplete 25
-			Write-Verbose -Message ('Verifying that switch "{0}" is external' -f $Switch.Name)
-			if ($Switch.SwitchType -ne [Microsoft.HyperV.PowerShell.VMSwitchType]::External)
+			Write-Progress -Activity ('Validating virtual switch "{0}"' -f $VSwitch.Name) -Status 'Switch is external' -PercentComplete 25
+			Write-Verbose -Message ('Verifying that switch "{0}" is external' -f $VSwitch.Name)
+			if ($VSwitch.SwitchType -ne [Microsoft.HyperV.PowerShell.VMSwitchType]::External)
 			{
-				Write-Warning -Message ('Switch "{0}" is not external, skipping' -f $Switch.Name) -WarningAction Stop
+				Write-Warning -Message ('Switch "{0}" is not external, skipping' -f $VSwitch.Name) -WarningAction Stop
 			}
 
-			Write-Progress -Activity ('Validating virtual switch "{0}"' -f $Switch.Name) -Status 'Switch is not a SET' -PercentComplete 50
-			Write-Verbose -Message ('Verifying that switch "{0}" is not already a SET' -f $Switch.Name)
-			if ($Switch.EmbeddedTeamingEnabled)
+			Write-Progress -Activity ('Validating virtual switch "{0}"' -f $VSwitch.Name) -Status 'Switch is not a SET' -PercentComplete 50
+			Write-Verbose -Message ('Verifying that switch "{0}" is not already a SET' -f $VSwitch.Name)
+			if ($VSwitch.EmbeddedTeamingEnabled)
 			{
-				Write-Warning -Message ('Switch "{0}" already uses SET, skipping' -f $Switch.Name) -WarningAction Stop
+				Write-Warning -Message ('Switch "{0}" already uses SET, skipping' -f $VSwitch.Name) -WarningAction Stop
 			}
 
-			Write-Progress -Activity ('Validating virtual switch "{0}"' -f $Switch.Name) -Status 'Switch uses LBFO' -PercentComplete 75
-			Write-Verbose -Message ('Verifying that switch "{0}" uses an LBFO team' -f $Switch.Name)
-			$TeamAdapter = Get-CimInstance -Namespace root/StandardCimv2 -ClassName MSFT_NetLbfoTeamNic -Filter ('InterfaceDescription="{0}"' -f $Switch.NetAdapterInterfaceDescription)
+			Write-Progress -Activity ('Validating virtual switch "{0}"' -f $VSwitch.Name) -Status 'Switch uses LBFO' -PercentComplete 75
+			Write-Verbose -Message ('Verifying that switch "{0}" uses an LBFO team' -f $VSwitch.Name)
+			$TeamAdapter = Get-CimInstance -Namespace root/StandardCimv2 -ClassName MSFT_NetLbfoTeamNic -Filter ('InterfaceDescription="{0}"' -f $VSwitch.NetAdapterInterfaceDescription)
 			if ($TeamAdapter -eq $null)
 			{
-				Write-Warning -Message ('Switch "{0}" does not use a team, skipping' -f $Switch.Name) -WarningAction Stop
+				Write-Warning -Message ('Switch "{0}" does not use a team, skipping' -f $VSwitch.Name) -WarningAction Stop
 			}
 			if ($TeamAdapter.VlanID)
 			{
-				Write-Warning -Message ('Switch "{0}" is bound to a team NIC with a VLAN assignment, skipping' -f $Switch.Name) -WarningAction Stop
-			}	
+				Write-Warning -Message ('Switch "{0}" is bound to a team NIC with a VLAN assignment, skipping' -f $VSwitch.Name) -WarningAction Stop
+			}
 		}
 		catch
 		{
@@ -200,25 +229,27 @@ PROCESS
 		}
 		finally
 		{
-			Write-Progress -Activity ('Validating virtual switch "{0}"' -f $Switch.Name) -Completed
+			Write-Progress -Activity ('Validating virtual switch "{0}"' -f $VSwitch.Name) -Completed
 		}
 
-		Write-Progress -Activity ('Loading information from virtual switch "{0}"' -f $Switch.Name) -Status 'Team NIC' -PercentComplete 25
+		Write-Progress -Activity ('Loading information from virtual switch "{0}"' -f $VSwitch.Name) -Status 'Team NIC' -PercentComplete 25
 		Write-Verbose -Message 'Loading team'
 		$Team = Get-CimAssociatedInstance -InputObject $TeamAdapter -ResultClassName MSFT_NetLbfoTeam
-		
-		Write-Progress -Activity ('Loading information from virtual switch "{0}"' -f $Switch.Name) -Status 'Guest virtual adapters' -PercentComplete 50
-		Write-Verbose -Message 'Loading VM adapters connected to this switch'
-		$GuestVNICs = Get-VMNetworkAdapter -VMName * | Where-Object -Property SwitchName -EQ $Switch.Name
 
-		Write-Progress -Activity ('Loading information from virtual switch "{0}"' -f $Switch.Name) -Status 'Host virtual adapters' -PercentComplete 75
+		Write-Progress -Activity ('Loading information from virtual switch "{0}"' -f $VSwitch.Name) -Status 'Guest virtual adapters' -PercentComplete 50
+		Write-Verbose -Message 'Loading VM adapters connected to this switch'
+		$GuestVNICs = Get-VMNetworkAdapter -VMName * | Where-Object -Property SwitchName -EQ $VSwitch.Name
+
+		Write-Progress -Activity ('Loading information from virtual switch "{0}"' -f $VSwitch.Name) -Status 'Host virtual adapters' -PercentComplete 75
 		Write-Verbose -Message 'Loading management adapters connected to this switch'
-		$HostVNICs = Get-VMNetworkAdapter -ManagementOS -SwitchName $Switch.Name
+		$HostVNICs = Get-VMNetworkAdapter -ManagementOS -SwitchName $VSwitch.Name
 
 		Write-Verbose -Message 'Gathering management OS virtual NIC information'
-		$HostVNICData.AddRange((ForEach-Object -InputObject $HostVNICs -Process { New-NetAdapterObjectPack -VNIC $_ } ))
+		#$HostVNICData.AddRange($HostVNICs.ForEach({New-NetAdapterDataPack -VNIC $_ }))
 
-		$HostVNICData
+		#$HostVNICs.ForEach({[NetAdapterDataPack]::new($_)})
+
+		[SwitchDataPack]::new($VSwitch, $Team, $HostVNICs.ForEach({[NetAdapterDataPack]::new($_)}))
 	}
 }
 
