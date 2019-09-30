@@ -105,7 +105,6 @@ BEGIN
 		[System.String]$Name
 		[Microsoft.HyperV.PowerShell.VMSwitchBandwidthMode]$BandwidthReservationMode
 		[System.UInt64]$DefaultFlow
-		[System.String]$TeamName
 		[System.String[]]$TeamMembers
 		[System.UInt32]$LoadBalancingAlgorithm
 		[NetAdapterDataPack[]]$HostVNICs
@@ -124,7 +123,6 @@ BEGIN
 				[Microsoft.HyperV.PowerShell.VMSwitchBandwidthMode]::Weight { $this.DefaultFlow = $VSwitch.DefaultFlowMinimumBandwidthWeight }
 				default { $this.DefaultFlow = 0 }
 			}
-			$this.TeamName = $Team.Name
 			$this.TeamMembers = ((Get-CimAssociatedInstance -InputObject $Team -ResultClassName MSFT_NetLbfoTeamMember).Name)
 			$this.LoadBalancingAlgorithm = $Team.LoadBalancingAlgorithm
 			$this.HostVNICs = $VNICs
@@ -135,7 +133,7 @@ BEGIN
 PROCESS
 {
 	$VMSwitches = New-Object System.Collections.ArrayList
-	$HostVNICData = New-Object System.Collections.ArrayList
+	$SwitchRebuildData = New-Object System.Collections.ArrayList
 
 	switch ($PSCmdlet.ParameterSetName)
 	{
@@ -194,7 +192,7 @@ PROCESS
 	Write-Verbose -Message 'Validating virtual switches'
 	foreach ($VSwitch in $VMSwitches)
 	{
-		New-Variable -Name TeamAdapter
+		$TeamAdapter = $null
 		try
 		{
 			Write-Progress -Activity ('Validating virtual switch "{0}"' -f $VSwitch.Name) -Status 'Switch is external' -PercentComplete 25
@@ -244,14 +242,13 @@ PROCESS
 		Write-Verbose -Message 'Loading management adapters connected to this switch'
 		$HostVNICs = Get-VMNetworkAdapter -ManagementOS -SwitchName $VSwitch.Name
 
-		Write-Verbose -Message 'Gathering management OS virtual NIC information'
-		#$HostVNICData.AddRange($HostVNICs.ForEach({New-NetAdapterDataPack -VNIC $_ }))
-
-		#$HostVNICs.ForEach({[NetAdapterDataPack]::new($_)})
-
-		[SwitchDataPack]::new($VSwitch, $Team, $HostVNICs.ForEach({[NetAdapterDataPack]::new($_)}))
+		Write-Verbose -Message 'Compiling virtual switch and management OS virtual NIC information'
+		$OutNull = $SwitchRebuildData.Add([SwitchDataPack]::new($VSwitch, $Team, $HostVNICs.ForEach({[NetAdapterDataPack]::new($_)})))
 	}
+	$SwitchRebuildData
 }
+
+# HostResource on Msvm_EthernetPortAllocationSettingData connected to Msvm_EmulatedEthernetPortSettingData refers to vswitch
 
 # DHCP or no
 # IP
