@@ -124,7 +124,16 @@ Write-Verbose -Message 'Verifying virtual switch'
 if([String]::IsNullOrEmpty($VMSwitchName))
 {
     Write-Verbose -Message 'No virtual switch specified, looking for an external switch'
-    $VMSwitchName = (Get-VMSwitch | Where-Object -Property SwitchType -EQ 'External')[0].Name
+    $externalSwitches = (Get-VMSwitch | Where-Object -Property SwitchType -EQ 'External')
+    if([String]::IsNullOrEmpty($externalSwitches))
+    {
+        Write-Error "No external Switches found, please add one or specify the internal one to be used."
+    }
+    else 
+    {
+        Write-Verbose -Message "Using external Switch: $(($externalSwitches)[0].Name)"
+        $VMSwitchName = ($externalSwitches)[0].Name
+    }
 }
 if([String]::IsNullOrEmpty($VMSwitchName))
 {
