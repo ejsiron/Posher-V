@@ -72,8 +72,7 @@ BEGIN
 
 	class NetAdapterDataPack
 	{
-		[System.String]$NicName
-		[System.String]$SwitchName
+		[System.String]$Name
 		[System.String]$MacAddress
 		[System.Int64]$MinimumBandwidthAbsolute = 0
 		[System.Int64]$MinimumBandwidthWeight = 0
@@ -83,8 +82,7 @@ BEGIN
 
 		NetAdapterDataPack([psobject]$VNIC)
 		{
-			$this.NicName = $VNIC.Name
-			$this.SwitchName = $VNIC.SwitchName
+			$this.Name = $VNIC.Name
 			$this.MacAddress = $VNIC.MacAddress
 			if ($VNIC.BandwidthSetting -ne $null)
 			{
@@ -105,14 +103,18 @@ BEGIN
 		[System.String]$Name
 		[Microsoft.HyperV.PowerShell.VMSwitchBandwidthMode]$BandwidthReservationMode
 		[System.UInt64]$DefaultFlow
+		[System.String]$TeamName
 		[System.String[]]$TeamMembers
 		[System.UInt32]$LoadBalancingAlgorithm
+		[System.Boolean]$PacketDirect
 		[NetAdapterDataPack[]]$HostVNICs
+		[Microsoft.HyperV.PowerShell.VMNetworkAdapter[]]$GuestVNICs
 
 		SwitchDataPack(
 			[psobject]$VSwitch,
 			[Microsoft.Management.Infrastructure.CimInstance]$Team,
-			[System.Object[]]$VNICs
+			[System.Object[]]$VNICs,
+			[Microsoft.HyperV.PowerShell.VMNetworkAdapter[]]$GuestVNICs
 		)
 		{
 			$this.Name = $VSwitch.Name
@@ -123,9 +125,12 @@ BEGIN
 				[Microsoft.HyperV.PowerShell.VMSwitchBandwidthMode]::Weight { $this.DefaultFlow = $VSwitch.DefaultFlowMinimumBandwidthWeight }
 				default { $this.DefaultFlow = 0 }
 			}
+			$this.TeamName = $Team.Name
 			$this.TeamMembers = ((Get-CimAssociatedInstance -InputObject $Team -ResultClassName MSFT_NetLbfoTeamMember).Name)
 			$this.LoadBalancingAlgorithm = $Team.LoadBalancingAlgorithm
+			$this.PacketDirect = $VSwitch.PacketDirectEnabled
 			$this.HostVNICs = $VNICs
+			$this.GuestVNICs = $GuestVNICs
 		}
 	}
 }
@@ -168,7 +173,7 @@ PROCESS
 		throw('No virtual VMswitches match the provided criteria')
 	}
 
-	Write-Progress -Activity 'Pre-flight' -Status 'Verifying operating system version' -PercentComplete 5
+	Write-Progress -Activity 'Pre-flight' -Status 'Verifying operating system version' -PercentComplete 5 -Id 1
 	Write-Verbose -Message 'Verifying operating system version'
 	$OSVersion = [System.Version]::Parse((Get-CimInstance -ClassName Win32_OperatingSystem).Version)
 	if ($OSVersion.Major -lt 10)
@@ -176,7 +181,7 @@ PROCESS
 		throw('Switch-embedded teams not supported on host operating system versions before 2016')
 	}
 
-	Write-Progress -Activity 'Pre-flight' -Status 'Loading virtual VMswitches' -PercentComplete 15
+	Write-Progress -Activity 'Pre-flight' -Status 'Loading virtual VMswitches' -PercentComplete 15 -Id 1
 
 	if ($NewName.Count -gt 0 -and $NewName.Count -ne $VMSwitches.Count)
 	{
@@ -188,28 +193,27 @@ PROCESS
 		throw($SwitchNameMismatchMessage)
 	}
 
-	Write-Progress -Activity 'Pre-flight' -Status 'Validating virtual switch configurations' -PercentComplete 25
+	Write-Progress -Activity 'Pre-flight' -Status 'Validating virtual switch configurations' -PercentComplete 25 -Id 1
 	Write-Verbose -Message 'Validating virtual switches'
 	foreach ($VSwitch in $VMSwitches)
 	{
-		$TeamAdapter = $null
 		try
 		{
-			Write-Progress -Activity ('Validating virtual switch "{0}"' -f $VSwitch.Name) -Status 'Switch is external' -PercentComplete 25
+			Write-Progress -Activity ('Validating virtual switch "{0}"' -f $VSwitch.Name) -Status 'Switch is external' -PercentComplete 25 -ParentId 1
 			Write-Verbose -Message ('Verifying that switch "{0}" is external' -f $VSwitch.Name)
 			if ($VSwitch.SwitchType -ne [Microsoft.HyperV.PowerShell.VMSwitchType]::External)
 			{
 				Write-Warning -Message ('Switch "{0}" is not external, skipping' -f $VSwitch.Name) -WarningAction Stop
 			}
 
-			Write-Progress -Activity ('Validating virtual switch "{0}"' -f $VSwitch.Name) -Status 'Switch is not a SET' -PercentComplete 50
+			Write-Progress -Activity ('Validating virtual switch "{0}"' -f $VSwitch.Name) -Status 'Switch is not a SET' -PercentComplete 50 -ParentId 1
 			Write-Verbose -Message ('Verifying that switch "{0}" is not already a SET' -f $VSwitch.Name)
 			if ($VSwitch.EmbeddedTeamingEnabled)
 			{
 				Write-Warning -Message ('Switch "{0}" already uses SET, skipping' -f $VSwitch.Name) -WarningAction Stop
 			}
 
-			Write-Progress -Activity ('Validating virtual switch "{0}"' -f $VSwitch.Name) -Status 'Switch uses LBFO' -PercentComplete 75
+			Write-Progress -Activity ('Validating virtual switch "{0}"' -f $VSwitch.Name) -Status 'Switch uses LBFO' -PercentComplete 75 -ParentId 1
 			Write-Verbose -Message ('Verifying that switch "{0}" uses an LBFO team' -f $VSwitch.Name)
 			$TeamAdapter = Get-CimInstance -Namespace root/StandardCimv2 -ClassName MSFT_NetLbfoTeamNic -Filter ('InterfaceDescription="{0}"' -f $VSwitch.NetAdapterInterfaceDescription)
 			if ($TeamAdapter -eq $null)
@@ -227,28 +231,103 @@ PROCESS
 		}
 		finally
 		{
-			Write-Progress -Activity ('Validating virtual switch "{0}"' -f $VSwitch.Name) -Completed
+			Write-Progress -Activity ('Validating virtual switch "{0}"' -f $VSwitch.Name) -Completed -ParentId 1
 		}
 
-		Write-Progress -Activity ('Loading information from virtual switch "{0}"' -f $VSwitch.Name) -Status 'Team NIC' -PercentComplete 25
+		Write-Progress -Activity ('Loading information from virtual switch "{0}"' -f $VSwitch.Name) -Status 'Team NIC' -PercentComplete 25 -ParentId 1
 		Write-Verbose -Message 'Loading team'
 		$Team = Get-CimAssociatedInstance -InputObject $TeamAdapter -ResultClassName MSFT_NetLbfoTeam
 
-		Write-Progress -Activity ('Loading information from virtual switch "{0}"' -f $VSwitch.Name) -Status 'Guest virtual adapters' -PercentComplete 50
+		Write-Progress -Activity ('Loading information from virtual switch "{0}"' -f $VSwitch.Name) -Status 'Guest virtual adapters' -PercentComplete 50 -ParentId 1
 		Write-Verbose -Message 'Loading VM adapters connected to this switch'
 		$GuestVNICs = Get-VMNetworkAdapter -VMName * | Where-Object -Property SwitchName -EQ $VSwitch.Name
 
-		Write-Progress -Activity ('Loading information from virtual switch "{0}"' -f $VSwitch.Name) -Status 'Host virtual adapters' -PercentComplete 75
+		Write-Progress -Activity ('Loading information from virtual switch "{0}"' -f $VSwitch.Name) -Status 'Host virtual adapters' -PercentComplete 75 -ParentId 1
 		Write-Verbose -Message 'Loading management adapters connected to this switch'
 		$HostVNICs = Get-VMNetworkAdapter -ManagementOS -SwitchName $VSwitch.Name
 
 		Write-Verbose -Message 'Compiling virtual switch and management OS virtual NIC information'
-		$OutNull = $SwitchRebuildData.Add([SwitchDataPack]::new($VSwitch, $Team, $HostVNICs.ForEach({[NetAdapterDataPack]::new($_)})))
-	}
-	$SwitchRebuildData
-}
+		$OutNull = $SwitchRebuildData.Add([SwitchDataPack]::new($VSwitch, $Team, ($HostVNICs.ForEach({[NetAdapterDataPack]::new($_)})), $GuestVNICs))
 
-# HostResource on Msvm_EthernetPortAllocationSettingData connected to Msvm_EmulatedEthernetPortSettingData refers to vswitch
+		Write-Progress -Activity ('Loading information from virtual switch "{0}"' -f $VSwitch.Name) -Completed
+	}
+	Write-Progress -Activity 'Pre-flight' -Status 'Cleaning up' -PercentComplete 99 -ParentId 1
+	Write-Verbose -Message 'Clearing loop variables'
+	$VSwitch = $Team = $TeamAdapter = $GuestVNICs = $HostVNICs = $null
+
+	Write-Progress -Activity 'Pre-flight' -Completed
+
+	$Mark = 0
+	$Step = 1 / $SwitchRebuildData.Count * 100
+
+	foreach($OldSwitchData in $SwitchRebuildData)
+	{
+		Write-Progress -Activity 'Rebuilding switches' -Status 'Processing switch data' -PercentComplete $Mark -Id 1
+		$Mark += $Step
+		$ShouldProcessTargetText = 'Virtual switch {0}' -f $OldSwitchData.Name
+		$ShouldProcessOperation = 'Disconnect all virtual adapters, remove team and switch, build switch-embedded team, replace management OS vNICs, reconnect virtual adapters'
+		if ($PSCmdlet.ShouldProcess($ShouldProcessTargetText , $ShouldProcessOperation))
+		{
+			$ProgressParams = @{Activity=('Processing switch {0}' -f $OldSwitchData.Name);ParentId=1}
+			Write-Verbose -Message 'Disconnecting virtual machine adapters'
+			Write-Progress @ProgressParams -Status 'Disconnecting virtual machine adapters' -PercentComplete 10
+			#Disconnect-VMNetworkAdapter -VMNetworkAdapter $OldSwitchData.GuestVNICs
+
+			Write-Verbose -Message 'Removing management vNICs'
+			Write-Progress @ProgressParams -Status 'Removing management vNICs' -PercentComplete 20
+			#$OldSwitchData.HostVNICs.Name.ForEach({ Remove-VMNetworkAdapter -ManagementOS -Name $_ })
+
+			Write-Verbose -Message 'Removing virtual switch'
+			Write-Progress @ProgressParams -Status 'Removing virtual switch' -PercentComplete 30
+			#Remove-VMSwitch -Name $OldSwitchData.Name -Confirm:$false`
+
+			Write-Verbose -Message 'Removing team'
+			Write-Progress @ProgressParams -Status 'Removing team' -PercentComplete 40
+			#Remove-NetLbfoTeam -Name $OldSwitchData.TeamName -Confirm:$false
+
+			Write-Verbose -Message 'Creating SET'
+			Write-Progress @ProgressParams -Status 'Creating SET' -PercentComplete 50
+			$SetLoadBalancingAlgorithm = $null
+			if(-not $UseDefaults)
+			{
+				if($OldSwitchData.LoadBalancingAlgorithm -eq 5)
+				{
+					$SetLoadBalancingAlgorithm = [Microsoft.HyperV.PowerShell.VMSwitchLoadBalancingAlgorithm]::Dynamic # 5 is dynamic; https://docs.microsoft.com/en-us/previous-versions/windows/desktop/ndisimplatcimprov/msft-netlbfoteam
+				}
+				else # SET does not have the various hash options for load-balancing; assume that the original switch used a non-Dynamic mode for a reason
+				{
+					$SetLoadBalancingAlgorithm = [Microsoft.HyperV.PowerShell.VMSwitchLoadBalancingAlgorithm]::HyperVPort
+				}
+			}
+			if($LoadBalancingAlgorithm)
+			{
+				$SetLoadBalancingAlgorithm = $LoadBalancingAlgorithm
+			}
+
+			$SetMinimumBandwidthMode = $null
+			if(-not $UseDefaults)
+			{
+				$SetMinimumBandwidthMode = $OldSwitchData.BandwidthReservationMode
+			}
+			if($MinimumBandwidthMode)
+			{
+				$SetMinimumBandwidthMode = $MinimumBandwidthMode
+			}
+			$SetParams = @{}
+			if($SetMinimumBandwidthMode)
+			{
+				$SetParams.Add('MinimumBandwidthMode', $SetMinimumBandwidthMode)
+			}
+			if($SetLoadBalancingAlgorithm)
+			{
+				$SetParams.Add('LoadBalancingAlgorithm', $SetLoadBalancingAlgorithm)
+			}
+
+			$SetParams
+			New-VMSwitch @SetParams -Name $OldSwitchData.Name -AllowManagementOS $false -EnableEmbeddedTeaming $true -Notes $Notes
+		}
+	}
+}
 
 # DHCP or no
 # IP
