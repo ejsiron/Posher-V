@@ -1,4 +1,4 @@
-# Get-VMMacConflict
+# New-VMLinux
 
 ## SYNOPSIS
 
@@ -148,7 +148,7 @@ Accept wildcard characters: False
 
 ### -VMSwitchName
 
-Name of the virtual switch to use. If not specified, selects the first external virtual switch.
+Name of the virtual switch to use. If not specified, selects the first external virtual switch. If no switch can be found, the script stops.
 
 ```yaml
     Type: String
@@ -234,6 +234,6 @@ None
 
 ## NOTES
 
-v1.1, July 30, 2019
+v1.2, October 9, 2019
 Author: Eric Siron
 Released under MIT license
