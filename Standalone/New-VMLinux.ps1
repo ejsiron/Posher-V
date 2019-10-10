@@ -24,7 +24,7 @@ If set, will not create a virtual DVD for the VM. Cannot use with InstallISOPath
 .PARAMETER Cluster
 If set, will add the virtual machine as a clustered resource.
 .PARAMETER VMSwitchName
-Name of the virtual switch to use. If not specified, selects the first external virtual switch.
+Name of the virtual switch to use. If not specified, selects the first external virtual switch. If no switch can be found, the script stops.
 .PARAMETER CPUCount
 Number of virtual CPUs to assign to the virtual machine. Uses 2 if not specified.
 .PARAMETER StartupMemory
@@ -37,7 +37,7 @@ The maximum amount of memory to assign to the VM. Uses 1GB if not specified.
 The size of the virtual hard disk. Defaults to 40GB if not specified.
 .NOTES
 Must run directly on a Hyper-V host.
-v1.1.1, September 25, 2019
+v1.2.0, October 9, 2019
 .EXAMPLE
 C:\Scripts\New-VMLinux -VMName svlcentos
 
@@ -61,15 +61,15 @@ Same as example 3, overriding the VHDX size
 .LINK
 https://ejsiron.github.io/Posher-V/New-VMLinux
 #>
-[CmdletBinding(SupportsShouldProcess=$true,DefaultParameterSetName='DVD')]
+[CmdletBinding(SupportsShouldProcess = $true, DefaultParameterSetName = 'DVD')]
 param
 (
-    [Parameter(Mandatory=$true, Position=1)][String]$VMName,
+    [Parameter(Mandatory = $true, Position = 1)][String]$VMName,
     [Parameter()][String]$VHDXName = '',
     [Parameter()][String]$VMStoragePath = '',
     [Parameter()][String]$VHDStoragePath = '',
-    [Parameter(ParameterSetName='DVD')][String]$InstallISOPath = '',
-    [Parameter(ParameterSetName='NoDVD')][Switch]$NoDVD,
+    [Parameter(ParameterSetName = 'DVD')][String]$InstallISOPath = '',
+    [Parameter(ParameterSetName = 'NoDVD')][Switch]$NoDVD,
     [Parameter()][Switch]$Cluster,
     [Parameter()][String]$VMSwitchName = '',
     [Parameter()][uint32]$CPUCount = 2,
@@ -84,51 +84,56 @@ param
 $ErrorActionPreference = [System.Management.Automation.ActionPreference]::Stop
 
 Write-Verbose -Message 'Validating VHDX name'
-if([String]::IsNullOrEmpty($VHDXName))
+if ([String]::IsNullOrEmpty($VHDXName))
 {
     $VHDXName = '{0}.vhdx' -f $VMName
     Write-Verbose -Message ('VHDX name not specified, using {0}' -f $VHDXName)
 }
-if($VHDXName -notmatch '\.vhdx$')
+if ($VHDXName -notmatch '\.vhdx$')
 {
     Write-Verbose -Message ('Appending .vhdx to {0}' -f $VHDXName)
     $VHDXName += '.vhdx'
 }
 Write-Verbose -Message 'Verifying virtual machine configuration storage path'
-if([String]::IsNullOrEmpty($VMStoragePath))
+if ([String]::IsNullOrEmpty($VMStoragePath))
 {
     Write-Verbose -Message 'Using host default virtual machine configuration storage path'
     $VMStoragePath = (Get-VMHost).VirtualMachinePath
 }
-if(-not (Test-Path -Path $VMStoragePath))
+if (-not (Test-Path -Path $VMStoragePath))
 {
     Write-Error -Message ('VM path {0} does not exist.' -f $VMStoragePath)
 }
 Write-Verbose -Message 'Verifying virtual hard disk storage path'
-if([String]::IsNullOrEmpty($VHDStoragePath))
+if ([String]::IsNullOrEmpty($VHDStoragePath))
 {
     Write-Verbose -Message 'Using host default virtual hard disk storage path'
     $VHDStoragePath = (Get-VMHost).VirtualHardDiskPath
 }
-if(-not (Test-Path -Path $VHDStoragePath))
+if (-not (Test-Path -Path $VHDStoragePath))
 {
     Write-Error -Message ('Virtual hard disk storage path {0} does not exist.' -f $VHDStoragePath)
 }
 $VHDStoragePath = Join-Path -Path $VHDStoragePath -ChildPath $VHDXName
 Write-Verbose -Message 'Validating virtual DVD and ISO file settings'
-if(-not $NoDVD -and -not [String]::IsNullOrEmpty($InstallISOPath) -and -not (Test-Path -Path $InstallISOPath -PathType Leaf))
+if (-not $NoDVD -and -not [String]::IsNullOrEmpty($InstallISOPath) -and -not (Test-Path -Path $InstallISOPath -PathType Leaf))
 {
     Write-Error -Message ('ISO file "{0}" does not exist' -f $InstallISOPath)
 }
 Write-Verbose -Message 'Verifying virtual switch'
-if([String]::IsNullOrEmpty($VMSwitchName))
+if ([String]::IsNullOrEmpty($VMSwitchName))
 {
     Write-Verbose -Message 'No virtual switch specified, looking for an external switch'
-    $VMSwitchName = (Get-VMSwitch | Where-Object -Property SwitchType -EQ 'External')[0].Name
-}
-if([String]::IsNullOrEmpty($VMSwitchName))
-{
-    Write-Error -Message ('No suitable virtual switch located')
+    $externalSwitches = @(Get-VMSwitch | Where-Object -Property SwitchType -EQ 'External')
+    if ($externalSwitches.Count -eq 0)
+    {
+        Write-Error "No external Switches found, please add one or specify the internal one to be used."
+    }
+    else
+    {
+        $VMSwitchName = $externalSwitches[0].Name
+        Write-Verbose -Message ('Using external Switch: {0}' -f $VMSwitchName)
+    }
 }
 
 Write-Verbose -Message 'Creating the virtual machine'
@@ -154,22 +159,22 @@ Write-Verbose -Message 'Attaching the newly-created VHDX'
 Add-VMHardDiskDrive -VM $VM -ControllerType SCSI -ControllerNumber 0 -ControllerLocation 0 -Path $VHDStoragePath
 Write-Verbose -Message 'Configuring UEFI settings'
 $VMFirmware = Set-VMFirmware -VM $VM -EnableSecureBoot On -SecureBootTemplate 'MicrosoftUEFICertificateAuthority' -Passthru
-if($NoDVD)
+if ($NoDVD)
 {
     Write-Verbose -Message 'Skipping virtual DVD configuration as instructed'
 }
 else
 {
     $VMDVDDrive = Add-VMDvdDrive -VM $VM -ControllerNumber 0 -ControllerLocation 1 -Passthru
-    if(-not ([String]::IsNullOrEmpty($InstallISOPath)))
+    if (-not ([String]::IsNullOrEmpty($InstallISOPath)))
     {
         Write-Verbose -Message ('Assigning ISO file "{0}"' -f $InstallISOPath)
         Set-VMDvdDrive -VMDvdDrive $VMDVDDrive -Path $InstallISOPath
         $NewBootOrder = New-Object System.Collections.ArrayList
         $OutNull = $NewBootOrder.Add($VMDVDDrive)
-        foreach($BootEntry in $VMFirmware.BootOrder)
+        foreach ($BootEntry in $VMFirmware.BootOrder)
         {
-            if($BootEntry.Device.Name -ne $VMDVDDrive.Name)
+            if ($BootEntry.Device.Name -ne $VMDVDDrive.Name)
             {
                 $OutNull = $NewBootOrder.Add($BootEntry)
             }
@@ -179,7 +184,7 @@ else
     }
 }
 
-if($Cluster)
+if ($Cluster)
 {
     Write-Verbose -Message ('Adding VM {0} to the cluster' -f $VMName)
     $OutNull = Add-ClusterVirtualMachineRole -VMName $VMName
