@@ -70,6 +70,16 @@ BEGIN
 	Set-StrictMode -Version Latest
 	$ErrorActionPreference = [System.Management.Automation.ActionPreference]::Stop
 
+	function Get-CimAdapterFromVirtualAdapter
+	{
+		param(
+			[Parameter()][psobject]$VNIC
+		)
+		$VnicCim = Get-CimInstance -Namespace root/virtualization/v2 -ClassName Msvm_InternalEthernetPort -Filter ('Name="{0}"' -f $VNIC.AdapterId)
+		$VnicLanEndpoint1 = Get-CimAssociatedInstance -InputObject $VnicCim -ResultClassName Msvm_LANEndpoint
+		Get-CimInstance -ClassName Win32_NetworkAdapter -Filter ('GUID="{0}"' -f $VnicLANEndpoint1.Name.Substring(($VnicLANEndpoint1.Name.IndexOf('{'))))
+	}
+
 	class NetAdapterDataPack
 	{
 		[System.String]$Name
@@ -90,9 +100,10 @@ BEGIN
 				$this.MinimumBandwidthWeight = $VNIC.BandwidthSetting.MinimumBandwidthWeight
 				$this.MaximumBandwidth = $VNIC.BandwidthSetting.MaximumBandwidth
 			}
-			$VnicCim = Get-CimInstance -Namespace root/virtualization/v2 -ClassName Msvm_InternalEthernetPort -Filter ('Name="{0}"' -f $VNIC.AdapterId)
-			$VnicLanEndpoint1 = Get-CimAssociatedInstance -InputObject $VnicCim -ResultClassName Msvm_LANEndpoint
-			$NetAdapter = Get-CimInstance -ClassName Win32_NetworkAdapter -Filter ('GUID="{0}"' -f $VnicLANEndpoint1.Name.Substring(($VnicLANEndpoint1.Name.IndexOf('{'))))
+			# $VnicCim = Get-CimInstance -Namespace root/virtualization/v2 -ClassName Msvm_InternalEthernetPort -Filter ('Name="{0}"' -f $VNIC.AdapterId)
+			# $VnicLanEndpoint1 = Get-CimAssociatedInstance -InputObject $VnicCim -ResultClassName Msvm_LANEndpoint
+			# $NetAdapter = Get-CimInstance -ClassName Win32_NetworkAdapter -Filter ('GUID="{0}"' -f $VnicLANEndpoint1.Name.Substring(($VnicLANEndpoint1.Name.IndexOf('{'))))
+			$NetAdapter = Get-CimAdapterFromVirtualAdapter -VNIC $VNIC
 			$this.NetAdapterConfiguration = Get-CimAssociatedInstance -InputObject $NetAdapter -ResultClassName Win32_NetworkAdapterConfiguration
 			$this.VlanId = [System.Int32](Get-VMNetworkAdapterVlan -VMNetworkAdapter $VNIC).AccessVlanId
 		}
@@ -313,18 +324,55 @@ PROCESS
 			{
 				$SetMinimumBandwidthMode = $MinimumBandwidthMode
 			}
-			$SetParams = @{}
+			$NewSwitchParams = @{}
 			if($SetMinimumBandwidthMode)
 			{
-				$SetParams.Add('MinimumBandwidthMode', $SetMinimumBandwidthMode)
+				$NewSwitchParams.Add('MinimumBandwidthMode', $SetMinimumBandwidthMode)
 			}
 			if($SetLoadBalancingAlgorithm)
 			{
-				$SetParams.Add('LoadBalancingAlgorithm', $SetLoadBalancingAlgorithm)
+				$NewSwitchParams.Add('LoadBalancingAlgorithm', $SetLoadBalancingAlgorithm)
 			}
 
-			$SetParams
-			New-VMSwitch @SetParams -Name $OldSwitchData.Name -AllowManagementOS $false -EnableEmbeddedTeaming $true -Notes $Notes
+			if($EnablePacketDirect -or ($OldSwitchData.PacketDirect -and -not $UseDefaults))
+			{
+				$NewSwitchParams.Add('EnablePacketDirect', $true)
+			}
+
+			try
+			{
+				$NewSwitch = New-VMSwitch @SetParams -Name $OldSwitchData.Name -AllowManagementOS $false -EnableEmbeddedTeaming $true -Notes $Notes
+			}
+			catch
+			{
+				Write-Error -Message ('Unable to create virtual switch {0}: {1}' -f $OldSwitchData.Name, $_.Exception.Message) -ErrorAction Continue
+				continue
+			}
+
+			foreach($VNIC in $OldSwitchData.vNICs)
+			{
+				$NewNic = Add-VMNetworkAdapter -SwitchName $NewSwitch.Name -ManagementOS -Name $VNIC.Name -StaticMacAddress $VNIC.MacAddress -Passthru
+				$SetNicParams = @{}
+				if($VNIC.MinimumBandwidthAbsolute)
+				{
+					$SetNicParams.Add('MinimumBandwidthAbsolute', $VNIC.MinimumBandwidthAbsolute)
+				}
+				elseif($VNIC.MinimumBandwidthWeight)
+				{
+					$SetNicParams.Add('MinimumBandwidthWeight', $VNIC.MinimumBandwidthWeight)
+				}
+				if($VNIC.MaximumBandwidth)
+				{
+					$SetNicParams.Add('MaximumBandwidth', $VNIC.MaximumBandwidth)
+				}
+				Set-VMNetworkAdapter -VMNetworkAdapter $VNIC @SetNicParams
+				if($VNIC.VlanId)
+				{
+					Set-VMNetworkAdapterVlan -VMNetworkAdapter $VNIC -Access -VlanId $VNIC.VlanId
+				}
+			}
+
+			Connect-VMNetworkAdapter -VMNetworkAdapter $OldSwitchData.GuestVNICs -VMSwitch $NewSwitch
 		}
 	}
 }
