@@ -70,14 +70,28 @@ BEGIN
 	Set-StrictMode -Version Latest
 	$ErrorActionPreference = [System.Management.Automation.ActionPreference]::Stop
 
-	function Get-CimAdapterFromVirtualAdapter
+	function Write-CimWarning
+	{
+		param(
+			[Parameter()][psobject]$CimResult,
+			[Parameter()][String]$Activity,
+			[Parameter()][String]$Url
+		)
+		if ($CimResult.ReturnValue -gt 0 )
+		{
+			Write-Warning -Message ('Error while {0}. Consult {1} for error code {2}', $Activity, $Url, $CimResult.ReturnValue) -WarningAction Continue
+		}
+	}
+
+	function Get-CimAdapterSettingsFromVirtualAdapter
 	{
 		param(
 			[Parameter()][psobject]$VNIC
 		)
 		$VnicCim = Get-CimInstance -Namespace root/virtualization/v2 -ClassName Msvm_InternalEthernetPort -Filter ('Name="{0}"' -f $VNIC.AdapterId)
 		$VnicLanEndpoint1 = Get-CimAssociatedInstance -InputObject $VnicCim -ResultClassName Msvm_LANEndpoint
-		Get-CimInstance -ClassName Win32_NetworkAdapter -Filter ('GUID="{0}"' -f $VnicLANEndpoint1.Name.Substring(($VnicLANEndpoint1.Name.IndexOf('{'))))
+		$NetAdapter = Get-CimInstance -ClassName Win32_NetworkAdapter -Filter ('GUID="{0}"' -f $VnicLANEndpoint1.Name.Substring(($VnicLANEndpoint1.Name.IndexOf('{'))))
+		Get-CimAssociatedInstance -InputObject $NetAdapter -ResultClassName Win32_NetworkAdapterConfiguration
 	}
 
 	class NetAdapterDataPack
@@ -100,9 +114,12 @@ BEGIN
 				$this.MinimumBandwidthWeight = $VNIC.BandwidthSetting.MinimumBandwidthWeight
 				$this.MaximumBandwidth = $VNIC.BandwidthSetting.MaximumBandwidth
 			}
+
+			## TODO: debug this section; merge may have broken it
 			$NetAdapter = Get-CimAdapterFromVirtualAdapter -VNIC $VNIC
 			$this.NetAdapterConfiguration = Get-CimAssociatedInstance -InputObject $NetAdapter -ResultClassName Win32_NetworkAdapterConfiguration
 			Write-Verbose -Message 'Setting VLAN ID'
+			$this.NetAdapterConfiguration = Get-CimAdapterSettingsFromVirtualAdapter -VNIC $VNIC
 			$this.VlanId = [System.Int32](Get-VMNetworkAdapterVlan -VMNetworkAdapter $VNIC).AccessVlanId
 		}
 	}
@@ -128,7 +145,7 @@ BEGIN
 		{
 			$this.Name = $VSwitch.Name
 			$this.BandwidthReservationMode = $VSwitch.BandwidthReservationMode
-			switch($this.BandwidthReservationMode)
+			switch ($this.BandwidthReservationMode)
 			{
 				[Microsoft.HyperV.PowerShell.VMSwitchBandwidthMode]::Absolute { $this.DefaultFlow = $VSwitch.DefaultFlowMinimumBandwidthAbsolute }
 				[Microsoft.HyperV.PowerShell.VMSwitchBandwidthMode]::Weight { $this.DefaultFlow = $VSwitch.DefaultFlowMinimumBandwidthWeight }
@@ -256,7 +273,7 @@ PROCESS
 		$HostVNICs = Get-VMNetworkAdapter -ManagementOS -SwitchName $VSwitch.Name
 
 		Write-Verbose -Message 'Compiling virtual switch and management OS virtual NIC information'
-		$OutNull = $SwitchRebuildData.Add([SwitchDataPack]::new($VSwitch, $Team, ($HostVNICs.ForEach({[NetAdapterDataPack]::new($_)})), $GuestVNICs))
+		$OutNull = $SwitchRebuildData.Add([SwitchDataPack]::new($VSwitch, $Team, ($HostVNICs.ForEach({ [NetAdapterDataPack]::new($_) })), $GuestVNICs))
 
 		Write-Progress -Activity ('Loading information from virtual switch "{0}"' -f $VSwitch.Name) -Completed
 	}
@@ -269,7 +286,7 @@ PROCESS
 	$Mark = 0
 	$Step = 1 / $SwitchRebuildData.Count * 100
 
-	foreach($OldSwitchData in $SwitchRebuildData)
+	foreach ($OldSwitchData in $SwitchRebuildData)
 	{
 		Write-Progress -Activity 'Rebuilding switches' -Status 'Processing switch data' -PercentComplete $Mark -Id 1
 		$Mark += $Step
@@ -277,7 +294,7 @@ PROCESS
 		$ShouldProcessOperation = 'Disconnect all virtual adapters, remove team and switch, build switch-embedded team, replace management OS vNICs, reconnect virtual adapters'
 		if ($PSCmdlet.ShouldProcess($ShouldProcessTargetText , $ShouldProcessOperation))
 		{
-			$ProgressParams = @{Activity=('Processing switch {0}' -f $OldSwitchData.Name);ParentId=1}
+			$ProgressParams = @{Activity = ('Processing switch {0}' -f $OldSwitchData.Name); ParentId = 1 }
 			Write-Verbose -Message 'Disconnecting virtual machine adapters'
 			Write-Progress @ProgressParams -Status 'Disconnecting virtual machine adapters' -PercentComplete 10
 			if($OldSwitchData.GuestVNICs)
@@ -300,18 +317,18 @@ PROCESS
 			Write-Verbose -Message 'Creating SET'
 			Write-Progress @ProgressParams -Status 'Creating SET' -PercentComplete 50
 			$SetLoadBalancingAlgorithm = $null
-			if(-not $UseDefaults)
+			if (-not $UseDefaults)
 			{
-				if($OldSwitchData.LoadBalancingAlgorithm -eq 5)
+				if ($OldSwitchData.LoadBalancingAlgorithm -eq 5)
 				{
 					$SetLoadBalancingAlgorithm = [Microsoft.HyperV.PowerShell.VMSwitchLoadBalancingAlgorithm]::Dynamic # 5 is dynamic; https://docs.microsoft.com/en-us/previous-versions/windows/desktop/ndisimplatcimprov/msft-netlbfoteam
 				}
-				else # SET does not have the various hash options for load-balancing; assume that the original switch used a non-Dynamic mode for a reason
+				else # SET does not have LBFO's hash options for load-balancing; assume that the original switch used a non-Dynamic mode for a reason
 				{
 					$SetLoadBalancingAlgorithm = [Microsoft.HyperV.PowerShell.VMSwitchLoadBalancingAlgorithm]::HyperVPort
 				}
 			}
-			if($LoadBalancingAlgorithm)
+			if ($LoadBalancingAlgorithm)
 			{
 				$SetLoadBalancingAlgorithm = $LoadBalancingAlgorithm
 			}
@@ -321,7 +338,7 @@ PROCESS
 			{
 				$NewMinimumBandwidthMode = $OldSwitchData.BandwidthReservationMode
 			}
-			if($MinimumBandwidthMode)
+			if ($MinimumBandwidthMode)
 			{
 				$NewMinimumBandwidthMode = $MinimumBandwidthMode
 			}
@@ -331,7 +348,7 @@ PROCESS
 				$NewSwitchParams.Add('MinimumBandwidthMode', $NewMinimumBandwidthMode)
 			}
 
-			if($EnablePacketDirect -or ($OldSwitchData.PacketDirect -and -not $UseDefaults))
+			if ($EnablePacketDirect -or ($OldSwitchData.PacketDirect -and -not $UseDefaults))
 			{
 				$NewSwitchParams.Add('EnablePacketDirect', $true)
 			}
@@ -357,16 +374,16 @@ PROCESS
 			{
 				Write-Verbose -Message ('Adding virtual adapter "{0}" to switch "{1}"' -f $VNIC.Name, $NewSwitch.Name)
 				$NewNic = Add-VMNetworkAdapter -SwitchName $NewSwitch.Name -ManagementOS -Name $VNIC.Name -StaticMacAddress $VNIC.MacAddress -Passthru
-				$SetNicParams = @{}
-				if($VNIC.MinimumBandwidthAbsolute)
+				$SetNicParams = @{ }
+				if ($VNIC.MinimumBandwidthAbsolute)
 				{
 					$SetNicParams.Add('MinimumBandwidthAbsolute', $VNIC.MinimumBandwidthAbsolute)
 				}
-				elseif($VNIC.MinimumBandwidthWeight)
+				elseif ($VNIC.MinimumBandwidthWeight)
 				{
 					$SetNicParams.Add('MinimumBandwidthWeight', $VNIC.MinimumBandwidthWeight)
 				}
-				if($VNIC.MaximumBandwidth)
+				if ($VNIC.MaximumBandwidth)
 				{
 					$SetNicParams.Add('MaximumBandwidth', $VNIC.MaximumBandwidth)
 				}
@@ -377,19 +394,44 @@ PROCESS
 					Write-Verbose -Message ('Setting VLAN ID on virtual adapter "{0}" on switch "{1}"' -f $VNIC.Name, $NewSwitch.Name)
 					Set-VMNetworkAdapterVlan -VMNetworkAdapter $NewNic -Access -VlanId $VNIC.VlanId
 				}
-			}
 
 			if($OldSwitchData.GuestVNICs)
-			{
+			{ # TODO: a merge moved a lot of this script to the wrong if() block; move to management OS vnic
 				Connect-VMNetworkAdapter -VMNetworkAdapter $OldSwitchData.GuestVNICs -VMSwitch $NewSwitch
+				$NewNicSettings = Get-CimAdapterSettingsFromVirtualAdapter -VNIC $NewNic
+				if (-not $VNIC.NetAdapterConfiguration)
+				{
+					$CimResult = Invoke-CimMethod -InputObject $NewNicSettings -MethodName 'ReleaseDHCPLease'	# ignore result; just to ensure that we're not needlessly soaking up any DHCP addresses
+					$CimResult = Invoke-CimMethod -InputObject $NewNicSettings -MethodName 'EnableStatic' -Arguments @{ IPAddress = $VNIC.NetAdapterConfiguration.IPAddress; SubnetMask = $VNIC.NetAdapterConfiguration.IPSubnet }
+					Write-CimWarning -CimResult $CimResult -Activity ('applying IP address(es) {0} and subnet masks {1} on {2}' -f [String]::Join(', ', $VNIC.NetAdapterConfiguration.IPAddress), [String]::Join(', ', $VNIC.NetAdapterConfiguration.IPSubnet), $NewNic.Name) -Url 'https://docs.microsoft.com/en-us/windows/win32/cimwin32prov/enablestatic-method-in-class-win32-networkadapterconfiguration'
+					if ($VNIC.NetAdapterConfiguration.DefaultIPGateway)
+					{
+						$CimResult = Invoke-CimMethod -InputObject $NewNicSettings -MethodName 'SetGateways' -Arguments @{ DefaultIPGateway = $VNIC.NetAdapterConfiguration.DefaultIPGateway }
+						Write-CimWarning -CimResult $CimResult -Activity ('applying gateway(s) {0} on {1} ' -f $VNIC.NetAdapterConfiguration.DefaultIPGateway, $NewNic.Name) -Url 'https://docs.microsoft.com/en-us/windows/win32/cimwin32prov/setgateways-method-in-class-win32-networkadapterconfiguration'
+					}
+					if ($VNIC.NetAdapterConfiguration.DNSServerSearchOrder)
+					{
+						$CimResult = Invoke-CimMethod -InputObject $NewNicSettings -MethodName 'SetDNSServerSearchOrder' -Arguments @{ DNSServerSearchOrder = $VNIC.NetAdapterConfiguration.DNSServerSearchOrder }
+						Write-CimWarning -CimResult $CimResult -Activity ('applying DNS server(s) {0} on {1}' -f [String]::Join((', ', $VNIC.NetAdapterConfiguration.DNSServerSearchOrder), $NewNic.Name)) -Url 'https://docs.microsoft.com/en-us/windows/win32/cimwin32prov/setdnsserversearchorder-method-in-class-win32-networkadapterconfiguration'
+
+					}
+				}
+
+				foreach ($GuestVNIC in $OldSwitchData.GuestVNICs)
+				{
+					try
+					{
+						Connect-VMNetworkAdapter -VMNetworkAdapter $GuestVNIC -VMSwitch $NewSwitch
+					}
+					catch
+					{
+						Write-Error -Message ('Cannot connect virtual adapter "{0}" with MAC address "{1}" to virtual switch "{2}": {3}' -f $GuestVNIC.Name, $GuestVNIC.MacAddress, $NewSwitch.Name, $_.Exception.Message) -ErrorAction Continue
+					}
+				}
 			}
 		}
 	}
 }
-
-# DHCP or no
-# IP
-# gateways
 # DNS addresses
 # DNS search suffixes
 # DNS suffixes
