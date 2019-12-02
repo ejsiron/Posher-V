@@ -100,11 +100,9 @@ BEGIN
 				$this.MinimumBandwidthWeight = $VNIC.BandwidthSetting.MinimumBandwidthWeight
 				$this.MaximumBandwidth = $VNIC.BandwidthSetting.MaximumBandwidth
 			}
-			# $VnicCim = Get-CimInstance -Namespace root/virtualization/v2 -ClassName Msvm_InternalEthernetPort -Filter ('Name="{0}"' -f $VNIC.AdapterId)
-			# $VnicLanEndpoint1 = Get-CimAssociatedInstance -InputObject $VnicCim -ResultClassName Msvm_LANEndpoint
-			# $NetAdapter = Get-CimInstance -ClassName Win32_NetworkAdapter -Filter ('GUID="{0}"' -f $VnicLANEndpoint1.Name.Substring(($VnicLANEndpoint1.Name.IndexOf('{'))))
 			$NetAdapter = Get-CimAdapterFromVirtualAdapter -VNIC $VNIC
 			$this.NetAdapterConfiguration = Get-CimAssociatedInstance -InputObject $NetAdapter -ResultClassName Win32_NetworkAdapterConfiguration
+			Write-Verbose -Message 'Setting VLAN ID'
 			$this.VlanId = [System.Int32](Get-VMNetworkAdapterVlan -VMNetworkAdapter $VNIC).AccessVlanId
 		}
 	}
@@ -282,19 +280,22 @@ PROCESS
 			$ProgressParams = @{Activity=('Processing switch {0}' -f $OldSwitchData.Name);ParentId=1}
 			Write-Verbose -Message 'Disconnecting virtual machine adapters'
 			Write-Progress @ProgressParams -Status 'Disconnecting virtual machine adapters' -PercentComplete 10
-			#Disconnect-VMNetworkAdapter -VMNetworkAdapter $OldSwitchData.GuestVNICs
+			if($OldSwitchData.GuestVNICs)
+			{
+				Disconnect-VMNetworkAdapter -VMNetworkAdapter $OldSwitchData.GuestVNICs
+			}
 
 			Write-Verbose -Message 'Removing management vNICs'
 			Write-Progress @ProgressParams -Status 'Removing management vNICs' -PercentComplete 20
-			#$OldSwitchData.HostVNICs.Name.ForEach({ Remove-VMNetworkAdapter -ManagementOS -Name $_ })
+			$OldSwitchData.HostVNICs.Name.ForEach({ Remove-VMNetworkAdapter -ManagementOS -Name $_ })
 
 			Write-Verbose -Message 'Removing virtual switch'
 			Write-Progress @ProgressParams -Status 'Removing virtual switch' -PercentComplete 30
-			#Remove-VMSwitch -Name $OldSwitchData.Name -Confirm:$false`
+			Remove-VMSwitch -Name $OldSwitchData.Name -Force
 
 			Write-Verbose -Message 'Removing team'
 			Write-Progress @ProgressParams -Status 'Removing team' -PercentComplete 40
-			#Remove-NetLbfoTeam -Name $OldSwitchData.TeamName -Confirm:$false
+			Remove-NetLbfoTeam -Name $OldSwitchData.TeamName -Confirm:$false
 
 			Write-Verbose -Message 'Creating SET'
 			Write-Progress @ProgressParams -Status 'Creating SET' -PercentComplete 50
@@ -315,23 +316,19 @@ PROCESS
 				$SetLoadBalancingAlgorithm = $LoadBalancingAlgorithm
 			}
 
-			$SetMinimumBandwidthMode = $null
+			$NewMinimumBandwidthMode = $null
 			if(-not $UseDefaults)
 			{
-				$SetMinimumBandwidthMode = $OldSwitchData.BandwidthReservationMode
+				$NewMinimumBandwidthMode = $OldSwitchData.BandwidthReservationMode
 			}
 			if($MinimumBandwidthMode)
 			{
-				$SetMinimumBandwidthMode = $MinimumBandwidthMode
+				$NewMinimumBandwidthMode = $MinimumBandwidthMode
 			}
-			$NewSwitchParams = @{}
-			if($SetMinimumBandwidthMode)
+			$NewSwitchParams = @{NetAdapterName=$OldSwitchData.TeamMembers}
+			if($NewMinimumBandwidthMode)
 			{
-				$NewSwitchParams.Add('MinimumBandwidthMode', $SetMinimumBandwidthMode)
-			}
-			if($SetLoadBalancingAlgorithm)
-			{
-				$NewSwitchParams.Add('LoadBalancingAlgorithm', $SetLoadBalancingAlgorithm)
+				$NewSwitchParams.Add('MinimumBandwidthMode', $NewMinimumBandwidthMode)
 			}
 
 			if($EnablePacketDirect -or ($OldSwitchData.PacketDirect -and -not $UseDefaults))
@@ -341,7 +338,7 @@ PROCESS
 
 			try
 			{
-				$NewSwitch = New-VMSwitch @SetParams -Name $OldSwitchData.Name -AllowManagementOS $false -EnableEmbeddedTeaming $true -Notes $Notes
+				$NewSwitch = New-VMSwitch @NewSwitchParams -Name $OldSwitchData.Name -AllowManagementOS $false -EnableEmbeddedTeaming $true -Notes $Notes
 			}
 			catch
 			{
@@ -349,8 +346,16 @@ PROCESS
 				continue
 			}
 
-			foreach($VNIC in $OldSwitchData.vNICs)
+			if($SetLoadBalancingAlgorithm)
 			{
+				Write-Verbose -Message ('Setting load balancing mode on switch "{0}" to "{1}"' -f $NewSwitch.Name, $SetLoadBalancingAlgorithm)
+				$NewSwitchParams.Add('LoadBalancingAlgorithm', $SetLoadBalancingAlgorithm)
+				Set-VMSwitchTeam -Name $NewSwitch.Name -LoadBalancingAlgorithm $SetLoadBalancingAlgorithm
+			}
+
+			foreach($VNIC in $OldSwitchData.HostVNICs)
+			{
+				Write-Verbose -Message ('Adding virtual adapter "{0}" to switch "{1}"' -f $VNIC.Name, $NewSwitch.Name)
 				$NewNic = Add-VMNetworkAdapter -SwitchName $NewSwitch.Name -ManagementOS -Name $VNIC.Name -StaticMacAddress $VNIC.MacAddress -Passthru
 				$SetNicParams = @{}
 				if($VNIC.MinimumBandwidthAbsolute)
@@ -365,14 +370,19 @@ PROCESS
 				{
 					$SetNicParams.Add('MaximumBandwidth', $VNIC.MaximumBandwidth)
 				}
-				Set-VMNetworkAdapter -VMNetworkAdapter $VNIC @SetNicParams
+				Write-Verbose -Message ('Setting properties on virtual adapter "{0}" on switch "{1}"' -f $VNIC.Name, $NewSwitch.Name)
+				Set-VMNetworkAdapter -VMNetworkAdapter $NewNic @SetNicParams
 				if($VNIC.VlanId)
 				{
-					Set-VMNetworkAdapterVlan -VMNetworkAdapter $VNIC -Access -VlanId $VNIC.VlanId
+					Write-Verbose -Message ('Setting VLAN ID on virtual adapter "{0}" on switch "{1}"' -f $VNIC.Name, $NewSwitch.Name)
+					Set-VMNetworkAdapterVlan -VMNetworkAdapter $NewNic -Access -VlanId $VNIC.VlanId
 				}
 			}
 
-			Connect-VMNetworkAdapter -VMNetworkAdapter $OldSwitchData.GuestVNICs -VMSwitch $NewSwitch
+			if($OldSwitchData.GuestVNICs)
+			{
+				Connect-VMNetworkAdapter -VMNetworkAdapter $OldSwitchData.GuestVNICs -VMSwitch $NewSwitch
+			}
 		}
 	}
 }
