@@ -77,9 +77,10 @@ BEGIN
 			[Parameter()][String]$Activity,
 			[Parameter()][String]$Url
 		)
-		if ($CimResult.ReturnValue -gt 0 )
+
+		if ($CimResult -and $CimResult.ReturnValue -gt 0 )
 		{
-			Write-Warning -Message ('Error while {0}. Consult {1} for error code {2}', $Activity, $Url, $CimResult.ReturnValue) -WarningAction Continue
+			Write-Warning -Message ('Error while {0}. Consult {1} for error code {2}' -f $Activity, $Url, $CimResult.ReturnValue) -WarningAction Continue
 		}
 	}
 
@@ -417,9 +418,7 @@ PROCESS
 				$CimResult = Invoke-CimMethod @InvokeParams -MethodName 'SetDynamicDNSRegistration' -Arguments @{ FullDNSRegistrationEnabled = $VNIC.NetAdapterConfiguration.FullDNSRegistrationEnabled; DomainDNSRegistrationEnabled = $VNIC.NetAdapterConfiguration.DomainDNSRegistrationEnabled }
 				Write-CimWarning -CimResult $CimResult -Activity ('setting DHCP registration behavior on {0}' -f $NewNic.Name) -Url 'https://docs.microsoft.com/en-us/windows/win32/cimwin32prov/setdynamicdnsregistration-method-in-class-win32-networkadapterconfiguration'
 
-				Write-Verbose -Message ('Setting WINS on {0}' -f $NewNic.Name)
-				$CimResult = Invoke-CimMethod @InvokeParams -MethodName 'EnableWINS' -Arguments @{ DNSEnabledForWINSResolution = $VNIC.NetAdapterConfiguration.DNSEnabledForWINSResolution; WINSEnableLMHostsLookup = $VNIC.NetAdapterConfiguration.WINSEnableLMHostsLookup; WINSHostLookupFile = $VNIC.NetAdapterConfiguration.WINSHostLookupFile; WINSScopeID = $VNIC.NetAdapterConfiguration.WINSScopeId }
-				Write-CimWarning -CimResult $CimResult -Activity ('setting WINS data on {0}' -f $NewNic.Name) -Url 'https://docs.microsoft.com/en-us/windows/win32/cimwin32prov/enablewins-method-in-class-win32-networkadapterconfiguration'
+				Write-Verbose -Message ('Setting WINS Servers on {0}' -f $NewNic.Name)
 				$CimResult = Invoke-CimMethod @InvokeParams -MethodName 'SetWINSServer' -Arguments @{ WINSPrimaryServer = $VNIC.NetAdapterConfiguration.WINSPrimaryServer; WINSSecondaryServer = $VNIC.NetAdapterConfiguration.WINSSecondaryServer }
 				Write-CimWarning -CimResult $CimResult -Activity ('setting WINS servers on {0}' -f $NewNic.Name) -Url 'https://docs.microsoft.com/en-us/windows/win32/cimwin32prov/setwinsserver-method-in-class-win32-networkadapterconfiguration'
 
@@ -430,8 +429,6 @@ PROCESS
 
 			if($OldSwitchData.GuestVNICs)
 			{
-				Connect-VMNetworkAdapter -VMNetworkAdapter $OldSwitchData.GuestVNICs -VMSwitch $NewSwitch
-
 				foreach ($GuestVNIC in $OldSwitchData.GuestVNICs)
 				{
 					try
