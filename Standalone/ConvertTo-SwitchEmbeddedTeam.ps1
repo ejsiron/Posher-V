@@ -115,10 +115,6 @@ BEGIN
 				$this.MaximumBandwidth = $VNIC.BandwidthSetting.MaximumBandwidth
 			}
 
-			## TODO: debug this section; merge may have broken it
-			$NetAdapter = Get-CimAdapterFromVirtualAdapter -VNIC $VNIC
-			$this.NetAdapterConfiguration = Get-CimAssociatedInstance -InputObject $NetAdapter -ResultClassName Win32_NetworkAdapterConfiguration
-			Write-Verbose -Message 'Setting VLAN ID'
 			$this.NetAdapterConfiguration = Get-CimAdapterSettingsFromVirtualAdapter -VNIC $VNIC
 			$this.VlanId = [System.Int32](Get-VMNetworkAdapterVlan -VMNetworkAdapter $VNIC).AccessVlanId
 		}
@@ -388,34 +384,53 @@ PROCESS
 					$SetNicParams.Add('MaximumBandwidth', $VNIC.MaximumBandwidth)
 				}
 				Write-Verbose -Message ('Setting properties on virtual adapter "{0}" on switch "{1}"' -f $VNIC.Name, $NewSwitch.Name)
-				Set-VMNetworkAdapter -VMNetworkAdapter $NewNic @SetNicParams
+				Set-VMNetworkAdapter -VMNetworkAdapter $NewNic @SetNicParams -ErrorAction Continue
 				if($VNIC.VlanId)
 				{
 					Write-Verbose -Message ('Setting VLAN ID on virtual adapter "{0}" on switch "{1}"' -f $VNIC.Name, $NewSwitch.Name)
 					Set-VMNetworkAdapterVlan -VMNetworkAdapter $NewNic -Access -VlanId $VNIC.VlanId
 				}
-
-			if($OldSwitchData.GuestVNICs)
-			{ # TODO: a merge moved a lot of this script to the wrong if() block; move to management OS vnic
-				Connect-VMNetworkAdapter -VMNetworkAdapter $OldSwitchData.GuestVNICs -VMSwitch $NewSwitch
 				$NewNicSettings = Get-CimAdapterSettingsFromVirtualAdapter -VNIC $NewNic
-				if (-not $VNIC.NetAdapterConfiguration)
+				$InvokeParams = @{
+					InputObject = $NewNicSettings;
+					ErrorAction = [System.Management.Automation.ActionPreference]::SilentlyContinue
+				}
+				if (-not ($VNIC.NetAdapterConfiguration.DHCPEnabled))
 				{
-					$CimResult = Invoke-CimMethod -InputObject $NewNicSettings -MethodName 'ReleaseDHCPLease'	# ignore result; just to ensure that we're not needlessly soaking up any DHCP addresses
-					$CimResult = Invoke-CimMethod -InputObject $NewNicSettings -MethodName 'EnableStatic' -Arguments @{ IPAddress = $VNIC.NetAdapterConfiguration.IPAddress; SubnetMask = $VNIC.NetAdapterConfiguration.IPSubnet }
+					$CimResult = Invoke-CimMethod @InvokeParams -MethodName 'ReleaseDHCPLease'	# ignore result; just to ensure that we're not needlessly soaking up any DHCP addresses
+					$CimResult = Invoke-CimMethod @InvokeParams -MethodName 'EnableStatic' -Arguments @{ IPAddress = $VNIC.NetAdapterConfiguration.IPAddress; SubnetMask = $VNIC.NetAdapterConfiguration.IPSubnet }
 					Write-CimWarning -CimResult $CimResult -Activity ('applying IP address(es) {0} and subnet masks {1} on {2}' -f [String]::Join(', ', $VNIC.NetAdapterConfiguration.IPAddress), [String]::Join(', ', $VNIC.NetAdapterConfiguration.IPSubnet), $NewNic.Name) -Url 'https://docs.microsoft.com/en-us/windows/win32/cimwin32prov/enablestatic-method-in-class-win32-networkadapterconfiguration'
 					if ($VNIC.NetAdapterConfiguration.DefaultIPGateway)
 					{
-						$CimResult = Invoke-CimMethod -InputObject $NewNicSettings -MethodName 'SetGateways' -Arguments @{ DefaultIPGateway = $VNIC.NetAdapterConfiguration.DefaultIPGateway }
+						$CimResult = Invoke-CimMethod @InvokeParams -MethodName 'SetGateways' -Arguments @{ DefaultIPGateway = $VNIC.NetAdapterConfiguration.DefaultIPGateway }
 						Write-CimWarning -CimResult $CimResult -Activity ('applying gateway(s) {0} on {1} ' -f $VNIC.NetAdapterConfiguration.DefaultIPGateway, $NewNic.Name) -Url 'https://docs.microsoft.com/en-us/windows/win32/cimwin32prov/setgateways-method-in-class-win32-networkadapterconfiguration'
 					}
 					if ($VNIC.NetAdapterConfiguration.DNSServerSearchOrder)
 					{
-						$CimResult = Invoke-CimMethod -InputObject $NewNicSettings -MethodName 'SetDNSServerSearchOrder' -Arguments @{ DNSServerSearchOrder = $VNIC.NetAdapterConfiguration.DNSServerSearchOrder }
+						$CimResult = Invoke-CimMethod @InvokeParams -MethodName 'SetDNSServerSearchOrder' -Arguments @{ DNSServerSearchOrder = $VNIC.NetAdapterConfiguration.DNSServerSearchOrder }
 						Write-CimWarning -CimResult $CimResult -Activity ('applying DNS server(s) {0} on {1}' -f [String]::Join((', ', $VNIC.NetAdapterConfiguration.DNSServerSearchOrder), $NewNic.Name)) -Url 'https://docs.microsoft.com/en-us/windows/win32/cimwin32prov/setdnsserversearchorder-method-in-class-win32-networkadapterconfiguration'
 
 					}
 				}
+
+				Write-Verbose -Message ('Setting DNS registration behavior on {0}' -f $NewNic.Name)
+				$CimResult = Invoke-CimMethod @InvokeParams -MethodName 'SetDynamicDNSRegistration' -Arguments @{ FullDNSRegistrationEnabled = $VNIC.NetAdapterConfiguration.FullDNSRegistrationEnabled; DomainDNSRegistrationEnabled = $VNIC.NetAdapterConfiguration.DomainDNSRegistrationEnabled }
+				Write-CimWarning -CimResult $CimResult -Activity ('setting DHCP registration behavior on {0}' -f $NewNic.Name) -Url 'https://docs.microsoft.com/en-us/windows/win32/cimwin32prov/setdynamicdnsregistration-method-in-class-win32-networkadapterconfiguration'
+
+				Write-Verbose -Message ('Setting WINS on {0}' -f $NewNic.Name)
+				$CimResult = Invoke-CimMethod @InvokeParams -MethodName 'EnableWINS' -Arguments @{ DNSEnabledForWINSResolution = $VNIC.NetAdapterConfiguration.DNSEnabledForWINSResolution; WINSEnableLMHostsLookup = $VNIC.NetAdapterConfiguration.WINSEnableLMHostsLookup; WINSHostLookupFile = $VNIC.NetAdapterConfiguration.WINSHostLookupFile; WINSScopeID = $VNIC.NetAdapterConfiguration.WINSScopeId }
+				Write-CimWarning -CimResult $CimResult -Activity ('setting WINS data on {0}' -f $NewNic.Name) -Url 'https://docs.microsoft.com/en-us/windows/win32/cimwin32prov/enablewins-method-in-class-win32-networkadapterconfiguration'
+				$CimResult = Invoke-CimMethod @InvokeParams -MethodName 'SetWINSServer' -Arguments @{ WINSPrimaryServer = $VNIC.NetAdapterConfiguration.WINSPrimaryServer; WINSSecondaryServer = $VNIC.NetAdapterConfiguration.WINSSecondaryServer }
+				Write-CimWarning -CimResult $CimResult -Activity ('setting WINS servers on {0}' -f $NewNic.Name) -Url 'https://docs.microsoft.com/en-us/windows/win32/cimwin32prov/setwinsserver-method-in-class-win32-networkadapterconfiguration'
+
+				Write-Verbose -Message ('Setting NetBIOS over TCP/IP behavior on {0}' -f $NewNic.Name)
+				$CimResult = Invoke-CimMethod @InvokeParams -MethodName 'SetTcpipNetbios ' -Arguments @{ TcpipNetbiosOptions = $VNIC.NetAdapterConfiguration.TcpipNetbiosOptions }
+				Write-CimWarning -CimResult $CimResult -Activity ('setting NetBIOS over TCP/IP behavior on {0}' -f $NewNic.Name)
+			}
+
+			if($OldSwitchData.GuestVNICs)
+			{
+				Connect-VMNetworkAdapter -VMNetworkAdapter $OldSwitchData.GuestVNICs -VMSwitch $NewSwitch
 
 				foreach ($GuestVNIC in $OldSwitchData.GuestVNICs)
 				{
@@ -432,11 +447,3 @@ PROCESS
 		}
 	}
 }
-# DNS addresses
-# DNS search suffixes
-# DNS suffixes
-# Register
-# Use suffix in registration
-# WINS
-# LMHOSTS
-# NetBIOS over TCP/IP
