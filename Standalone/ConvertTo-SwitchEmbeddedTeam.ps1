@@ -70,20 +70,6 @@ BEGIN
 	Set-StrictMode -Version Latest
 	$ErrorActionPreference = [System.Management.Automation.ActionPreference]::Stop
 
-	function Write-CimWarning
-	{
-		param(
-			[Parameter()][psobject]$CimResult,
-			[Parameter()][String]$Activity,
-			[Parameter()][String]$Url
-		)
-
-		if ($CimResult -and $CimResult.ReturnValue -gt 0 )
-		{
-			Write-Warning -Message ('Error while {0}. Consult {1} for error code {2}' -f $Activity, $Url, $CimResult.ReturnValue) -WarningAction Continue
-		}
-	}
-
 	function Get-CimAdapterSettingsFromVirtualAdapter
 	{
 		param(
@@ -154,6 +140,25 @@ BEGIN
 			$this.PacketDirect = $VSwitch.PacketDirectEnabled
 			$this.HostVNICs = $VNICs
 			$this.GuestVNICs = $GuestVNICs
+		}
+	}
+
+	function Set-CimAdapterProperty
+	{
+		param(
+			[Parameter()][System.Object]$InputObject,
+			[Parameter()][System.String]$MethodName,
+			[Parameter()][System.Object]$Arguments,
+			[Parameter()][System.String]$Activity,
+			[Parameter()][System.String]$Url
+		)
+
+		Write-Verbose -Message $Activity
+		$CimResult = Invoke-CimMethod -InputObject $InputObject -MethodName $MethodName -Arguments $Arguments -ErrorAction Continue
+
+		if ($CimResult -and $CimResult.ReturnValue -gt 0 )
+		{
+			Write-Warning -Message ('CIM error from operation: {0}. Consult {1} for error code {2}' -f $Activity, $Url, $CimResult.ReturnValue) -WarningAction Continue
 		}
 	}
 }
@@ -291,20 +296,22 @@ PROCESS
 		exit 1
 	}
 
-	$Mark = 0
-	$Step = 1 / $SwitchRebuildData.Count * 100
+	$SwitchMark = 0
+	$SwitchCounter = 1
+	$SwitchStep = 1 / $SwitchRebuildData.Count * 100
 
 	foreach ($OldSwitchData in $SwitchRebuildData)
 	{
-		Write-Progress -Activity 'Rebuilding switches' -Status 'Processing switch data' -PercentComplete $Mark -Id 1
-		$Mark += $Step
+		Write-Progress -Activity 'Rebuilding switches' -Status ('Processing virtual switch {0}/{1}' -f $SwitchCounter, $SwitchRebuildData.Count) -PercentComplete $SwitchMark -Id 1
+		$SwitchCounter++
+		$SwitchMark += $SwitchStep
 		$ShouldProcessTargetText = 'Virtual switch {0}' -f $OldSwitchData.Name
 		$ShouldProcessOperation = 'Disconnect all virtual adapters, remove team and switch, build switch-embedded team, replace management OS vNICs, reconnect virtual adapters'
 		if ($PSCmdlet.ShouldProcess($ShouldProcessTargetText , $ShouldProcessOperation))
 		{
-			$ProgressParams = @{Activity = ('Processing switch {0}' -f $OldSwitchData.Name); ParentId = 1 }
+			$SwitchProgressParams = @{Activity = ('Processing switch {0}' -f $OldSwitchData.Name); ParentId = 1; Id=2 }
 			Write-Verbose -Message 'Disconnecting virtual machine adapters'
-			Write-Progress @ProgressParams -Status 'Disconnecting virtual machine adapters' -PercentComplete 10
+			Write-Progress @SwitchProgressParams -Status 'Disconnecting virtual machine adapters' -PercentComplete 10
 			if($OldSwitchData.GuestVNICs)
 			{
 				Disconnect-VMNetworkAdapter -VMNetworkAdapter $OldSwitchData.GuestVNICs
@@ -313,20 +320,20 @@ PROCESS
 			if($OldSwitchData.HostVNICs)
 			{
 				Write-Verbose -Message 'Removing management vNICs'
-				Write-Progress @ProgressParams -Status 'Removing management vNICs' -PercentComplete 20
+				Write-Progress @SwitchProgressParams -Status 'Removing management vNICs' -PercentComplete 20
 				Remove-VMNetworkAdapter -ManagementOS
 			}
 
 			Write-Verbose -Message 'Removing virtual switch'
-			Write-Progress @ProgressParams -Status 'Removing virtual switch' -PercentComplete 30
+			Write-Progress @SwitchProgressParams -Status 'Removing virtual switch' -PercentComplete 30
 			Remove-VMSwitch -Name $OldSwitchData.Name -Force
 
 			Write-Verbose -Message 'Removing team'
-			Write-Progress @ProgressParams -Status 'Removing team' -PercentComplete 40
+			Write-Progress @SwitchProgressParams -Status 'Removing team' -PercentComplete 40
 			Remove-NetLbfoTeam -Name $OldSwitchData.TeamName -Confirm:$false
 
 			Write-Verbose -Message 'Creating SET'
-			Write-Progress @ProgressParams -Status 'Creating SET' -PercentComplete 50
+			Write-Progress @SwitchProgressParams -Status 'Creating SET' -PercentComplete 50
 			$SetLoadBalancingAlgorithm = $null
 			if (-not $UseDefaults)
 			{
@@ -376,14 +383,23 @@ PROCESS
 
 			if($SetLoadBalancingAlgorithm)
 			{
-				Write-Verbose -Message ('Setting load balancing mode on switch "{0}" to "{1}"' -f $NewSwitch.Name, $SetLoadBalancingAlgorithm)
+				Write-Verbose -Message ('Setting load balancing mode to {0}' -f $SetLoadBalancingAlgorithm)
+				Write-Progress @SwitchProgressParams -Status 'Setting SET load balancing algorithm' -PercentComplete 60
 				$NewSwitchParams.Add('LoadBalancingAlgorithm', $SetLoadBalancingAlgorithm)
 				Set-VMSwitchTeam -Name $NewSwitch.Name -LoadBalancingAlgorithm $SetLoadBalancingAlgorithm
 			}
 
+			$VNICCounter = 0
+
 			foreach($VNIC in $OldSwitchData.HostVNICs)
 			{
+				$VNICCounter++
+				Write-Progress @SwitchProgressParams -Status ('Configuring management OS vNIC {0}/{1}' -f $VNICCounter, $OldSwitchData.HostVNICs.Count) -PercentComplete 70
+
+				$VNICProgressParams = @{Activity = ('Processing VNIC {0}' -f $VNIC.Name); ParentId = 2; Id=3 }
+
 				Write-Verbose -Message ('Adding virtual adapter "{0}" to switch "{1}"' -f $VNIC.Name, $NewSwitch.Name)
+				Write-Progress @VNICProgressParams -Status 'Adding vNIC' -PercentComplete 10
 				$NewNic = Add-VMNetworkAdapter -SwitchName $NewSwitch.Name -ManagementOS -Name $VNIC.Name -StaticMacAddress $VNIC.MacAddress -Passthru
 				$SetNicParams = @{ }
 				if ($VNIC.MinimumBandwidthAbsolute)
@@ -399,70 +415,84 @@ PROCESS
 					$SetNicParams.Add('MaximumBandwidth', $VNIC.MaximumBandwidth)
 				}
 				Write-Verbose -Message ('Setting properties on virtual adapter "{0}" on switch "{1}"' -f $VNIC.Name, $NewSwitch.Name)
+
+				Write-Progress @VNICProgressParams -Status 'Setting vNIC parameters' -PercentComplete 20
 				Set-VMNetworkAdapter -VMNetworkAdapter $NewNic @SetNicParams -ErrorAction Continue
 				if($VNIC.VlanId)
 				{
+					Write-Progress @VNICProgressParams -Status 'Setting VLAN ID' -PercentComplete 30
 					Write-Verbose -Message ('Setting VLAN ID on virtual adapter "{0}" on switch "{1}"' -f $VNIC.Name, $NewSwitch.Name)
 					Set-VMNetworkAdapterVlan -VMNetworkAdapter $NewNic -Access -VlanId $VNIC.VlanId
 				}
 				$NewNicSettings = Get-CimAdapterSettingsFromVirtualAdapter -VNIC $NewNic
-				$InvokeParams = @{
-					InputObject = $NewNicSettings;
-					ErrorAction = [System.Management.Automation.ActionPreference]::SilentlyContinue
-				}
 
 				if (-not ($VNIC.NetAdapterConfiguration.DHCPEnabled))
 				{
-					#Write-Verbose -Message ('Releasing any DHCP addresses on {0}' -f $NewNic.Name)
-					#$CimResult = Invoke-CimMethod @InvokeParams -MethodName 'ReleaseDHCPLease'	# ignore result; just to ensure that we're not needlessly soaking up any DHCP addresses
-					#Write-CimWarning -CimResult $CimResult -Activity ('applying IP address(es) {0} and subnet masks {1} on {2}' -f [String]::Join(', ', $VNIC.NetAdapterConfiguration.IPAddress), [String]::Join(', ', $VNIC.NetAdapterConfiguration.IPSubnet), $NewNic.Name) -Url 'https://docs.microsoft.com/en-us/windows/win32/cimwin32prov/enablestatic-method-in-class-win32-networkadapterconfiguration'
+					Write-Progress @VNICProgressParams -Status 'Setting DNS registration behavior' -PercentComplete 40
+					Set-CimAdapterProperty -InputObject $NewNicSettings -MethodName 'SetDynamicDNSRegistration' `
+					-Arguments @{ FullDNSRegistrationEnabled = $VNIC.NetAdapterConfiguration.FullDNSRegistrationEnabled; DomainDNSRegistrationEnabled = $VNIC.NetAdapterConfiguration.DomainDNSRegistrationEnabled } `
+					-Activity ('Setting DNS registration behavior (dynamic registration: {0}, with domain name: {1}) on {2}' -f $VNIC.NetAdapterConfiguration.FullDNSRegistrationEnabled, $VNIC.NetAdapterConfiguration.DomainDNSRegistrationEnabled, $NewNic.Name) `
+					-Url 'https://docs.microsoft.com/en-us/windows/win32/cimwin32prov/setdynamicdnsregistration-method-in-class-win32-networkadapterconfiguration'
 
-					Write-Verbose -Message ('Setting DNS registration behavior on {0}' -f $NewNic.Name)
-					$CimResult = Invoke-CimMethod @InvokeParams -MethodName 'SetDynamicDNSRegistration' -Arguments @{ FullDNSRegistrationEnabled = $VNIC.NetAdapterConfiguration.FullDNSRegistrationEnabled; DomainDNSRegistrationEnabled = $VNIC.NetAdapterConfiguration.DomainDNSRegistrationEnabled }
-
+					Write-Progress @VNICProgressParams -Status 'Setting IP and subnet masks' -PercentComplete 50
 					# split up IP data because if EnableStatic doesn't like one thing in any IP/mask pair, it won't set anything at all
 					$IPs = [System.Collections.ArrayList]$VNIC.NetAdapterConfiguration.IPAddress
 					$SubnetMasks = [System.Collections.ArrayList]$VNIC.NetAdapterConfiguration.IPSubnet
 					for ($i = 0; $i -lt $IPs.Count; $i++)
 					{
-						Write-Verbose -Message ('Setting static IP data for {0} on {1}'  -f $IPs[$i], $NewNic.Name)
-						$CimResult = Invoke-CimMethod @InvokeParams -MethodName 'EnableStatic' -Arguments @{ IPAddress = @($IPs[$i]); SubnetMask = @($SubnetMasks[$i]) }
-						Write-CimWarning -CimResult $CimResult -Activity ('setting static IP data for {0} on {1}' -f $IPs[$i], $NewNic.Name) -Url 'https://docs.microsoft.com/en-us/windows/win32/cimwin32prov/enablestatic-method-in-class-win32-networkadapterconfiguration'
+						Set-CimAdapterProperty -InputObject $NewNicSettings -MethodName 'EnableStatic' `
+							-Arguments @{ IPAddress = @($IPs[$i]); SubnetMask = @($SubnetMasks[$i]) } `
+							-Activity ('Setting IP {0} and subnet mask {1} on {2}' -f $IPs[$i], $SubnetMasks[$i], $NewNic.Name) `
+							-Url 'https://docs.microsoft.com/en-us/windows/win32/cimwin32prov/enablestatic-method-in-class-win32-networkadapterconfiguration'
 					}
 
+					Write-Progress @VNICProgressParams -Status 'Setting gateways' -PercentComplete 60
 					if ($VNIC.NetAdapterConfiguration.DefaultIPGateway)
 					{
-						Write-Verbose -Message ('Setting gateways on {0}'  -f $NewNic.Name)
-						$CimResult = Invoke-CimMethod @InvokeParams -MethodName 'SetGateways' -Arguments @{ DefaultIPGateway = $VNIC.NetAdapterConfiguration.DefaultIPGateway }
-						Write-CimWarning -CimResult $CimResult -Activity ('applying gateway(s) {0} on {1} ' -f $VNIC.NetAdapterConfiguration.DefaultIPGateway, $NewNic.Name) -Url 'https://docs.microsoft.com/en-us/windows/win32/cimwin32prov/setgateways-method-in-class-win32-networkadapterconfiguration'
+						Set-CimAdapterProperty -InputObject $NewNicSettings -MethodName 'SetGateways' `
+						-Arguments @{ DefaultIPGateway = $VNIC.NetAdapterConfiguration.DefaultIPGateway } `
+						-Activity ('Setting gateways {0} on {1}'  -f $VNIC.NetAdapterConfiguration.DefaultIPGateway, $NewNic.Name) `
+						-Url 'https://docs.microsoft.com/en-us/windows/win32/cimwin32prov/setgateways-method-in-class-win32-networkadapterconfiguration'
 					}
 
 					if($VNIC.NetAdapterConfiguration.DNSDomain)
 					{
-						Write-Verbose -Message ('Setting DNS domain on {0}' -f $NewNic.Name)
-						$CimResult = Invoke-CimMethod @InvokeParams -MethodName 'SetDNSDomain' -Arguments @{ DNSDomain = $VNIC.NetAdapterConfiguration.DNSDomain }
-						Write-CimWarning -CimResult $CimResult -Activity ('setting DNS domain "{0}" on {1}' -f $VNIC.NetAdapterConfiguration.DNSDomain, $NewNic.Name) -Url 'https://docs.microsoft.com/en-us/windows/win32/cimwin32prov/setdnsdomain-method-in-class-win32-networkadapterconfiguration'
+						Write-Progress @VNICProgressParams -Status 'Setting DNS domain' -PercentComplete 70
+						Set-CimAdapterProperty -InputObject $NewNicSettings -MethodName 'SetDNSDomain' `
+						-Arguments @{ DNSDomain = $VNIC.NetAdapterConfiguration.DNSDomain } `
+						-Activity ('Setting DNS domain {0} on {1}' -f $VNIC.NetAdapterConfiguration.DNSDomain, $NewNic.Name) `
+						-Url 'https://docs.microsoft.com/en-us/windows/win32/cimwin32prov/setdnsdomain-method-in-class-win32-networkadapterconfiguration'
 					}
 
 					if ($VNIC.NetAdapterConfiguration.DNSServerSearchOrder)
 					{
-						Write-Verbose -Message ('Setting DNS servers on {0}'  -f $NewNic.Name)
-						$CimResult = Invoke-CimMethod @InvokeParams -MethodName 'SetDNSServerSearchOrder ' -Arguments @{ DNSServerSearchOrder = $VNIC.NetAdapterConfiguration.DNSServerSearchOrder }
-						Write-CimWarning -CimResult $CimResult -Activity ('setting DNS servers {0} on {1}' -f [String]::Join(', ', $VNIC.NetAdapterConfiguration.DNSServerSearchOrder), $NewNic.Name) -Url 'https://docs.microsoft.com/en-us/windows/win32/cimwin32prov/setdnsserversearchorder-method-in-class-win32-networkadapterconfiguration'
+						Write-Progress @VNICProgressParams -Status 'Setting DNS servers' -PercentComplete 80
+						Set-CimAdapterProperty -InputObject $NewNicSettings -MethodName 'SetDNSServerSearchOrder' `
+						-Arguments @{ DNSServerSearchOrder = $VNIC.NetAdapterConfiguration.DNSServerSearchOrder } `
+						-Activity ('setting DNS servers {0} on {1}' -f [String]::Join(', ', $VNIC.NetAdapterConfiguration.DNSServerSearchOrder), $NewNic.Name) `
+						-Url 'https://docs.microsoft.com/en-us/windows/win32/cimwin32prov/setdnsserversearchorder-method-in-class-win32-networkadapterconfiguration'
 					}
 
 					if($VNIC.NetAdapterConfiguration.WINSPrimaryServer)
 					{
-						Write-Verbose -Message ('Setting WINS Servers on {0}' -f $NewNic.Name)
-						$CimResult = Invoke-CimMethod @InvokeParams -MethodName 'SetWINSServer' -Arguments @{ WINSPrimaryServer = $VNIC.NetAdapterConfiguration.WINSPrimaryServer; WINSSecondaryServer = $VNIC.NetAdapterConfiguration.WINSSecondaryServer }
-						Write-CimWarning -CimResult $CimResult -Activity ('setting WINS servers on {0}' -f $NewNic.Name) -Url 'https://docs.microsoft.com/en-us/windows/win32/cimwin32prov/setwinsserver-method-in-class-win32-networkadapterconfiguration'
+						Write-Progress @VNICProgressParams -Status 'Setting WINS servers' -PercentComplete 90
+						Set-CimAdapterProperty -InputObject $NewNicSettings -MethodName 'SetWINSServer' `
+						-Arguments @{ WINSPrimaryServer = $VNIC.NetAdapterConfiguration.WINSPrimaryServer; WINSSecondaryServer = $VNIC.NetAdapterConfiguration.WINSSecondaryServer }
+						-Activity ('Setting WINS servers {0} on {1}' -f ([String]::Join(', ', $VNIC.NetAdapterConfiguration.WINSPrimaryServer, $VNIC.NetAdapterConfiguration.WINSSecondaryServer)), $NewNic.Name) `
+						-Url 'https://docs.microsoft.com/en-us/windows/win32/cimwin32prov/setwinsserver-method-in-class-win32-networkadapterconfiguration'
 					}
-				}
 
-				Write-Verbose -Message ('Setting NetBIOS over TCP/IP behavior on {0}' -f $NewNic.Name)
-				$CimResult = Invoke-CimMethod @InvokeParams -MethodName 'SetTcpipNetbios ' -Arguments @{ TcpipNetbiosOptions = $VNIC.NetAdapterConfiguration.TcpipNetbiosOptions }
-				Write-CimWarning -CimResult $CimResult -Activity ('setting NetBIOS over TCP/IP behavior on {0}' -f $NewNic.Name)
+					Write-Progress @VNICProgressParams -Status 'Setting NetBIOS over TCP/IP behavior' -PercentComplete 100
+					Set-CimAdapterProperty -InputObject $NewNicSettings -MethodName 'SetTcpipNetbios' `
+					-Arguments @{ TcpipNetbiosOptions = $VNIC.NetAdapterConfiguration.TcpipNetbiosOptions } `
+					-Activity ('Setting NetBIOS over TCP/IP behavior on {0} to {1}' -f $NewNic.Name, $VNIC.NetAdapterConfiguration.TcpipNetbiosOptions) `
+					-Url 'https://docs.microsoft.com/en-us/windows/win32/cimwin32prov/settcpipnetbios-method-in-class-win32-networkadapterconfiguration'
+				}
 			}
+
+			Write-Progress @VNICProgressParams -Completed
+
+			Write-Progress @SwitchProgressParams -Status 'Reconnecting guest vNICs' -PercentComplete 80
 
 			if($OldSwitchData.GuestVNICs)
 			{
@@ -478,6 +508,8 @@ PROCESS
 					}
 				}
 			}
+
+			Write-Progress @SwitchProgressParams -Completed
 		}
 	}
 }
