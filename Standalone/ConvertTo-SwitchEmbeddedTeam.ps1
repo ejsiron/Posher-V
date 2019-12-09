@@ -90,6 +90,9 @@ BEGIN
 		[System.Int64]$MaximumBandwidth = 0
 		[System.Int32]$VlanId = 0
 		[Microsoft.Management.Infrastructure.CimInstance]$NetAdapterConfiguration
+		[Microsoft.Management.Infrastructure.CimInstance]$AdvancedProperties
+		[Microsoft.Management.Infrastructure.CimInstance[]]$IPAddresses
+		[Microsoft.Management.Infrastructure.CimInstance[]]$Gateways
 
 		NetAdapterDataPack([psobject]$VNIC)
 		{
@@ -102,8 +105,13 @@ BEGIN
 				$this.MaximumBandwidth = $VNIC.BandwidthSetting.MaximumBandwidth
 			}
 
-			$this.NetAdapterConfiguration = Get-CimAdapterSettingsFromVirtualAdapter -VNIC $VNIC
 			$this.VlanId = [System.Int32](Get-VMNetworkAdapterVlan -VMNetworkAdapter $VNIC).AccessVlanId
+			$this.NetAdapterConfiguration = Get-CimAdapterSettingsFromVirtualAdapter -VNIC $VNIC
+			$MSFTAdapter = Get-CimInstance -Namespace root/StandardCimv2 -ClassName MSFT_NetAdapter -Filter ('InterfaceIndex={0}' -f $this.NetAdapterConfiguration.InterfaceIndex)
+			$this.AdvancedProperties = Get-CimAssociatedInstance -InputObject $MSFTAdapter -ResultClassName MSFT_NetAdapterAdvancedPropertySettingData | Where-Object -FilterScript { $_.DisplayName -ne '' -and ($_.RegistryValue -replace '{}', '') -ne $_.DefaultRegistryValue }
+			# alternatively use Get-NetIPAddress and Get-NetRoute, but they treat empty results as errors
+			$this.IPAddresses = @(Get-CimInstance -Namespace root/StandardCimv2 -ClassName MSFT_NetIPAddress -Filter ('InterfaceIndex={0} AND PrefixOrigin=1' -f $this.NetAdapterConfiguration.InterfaceIndex))
+			$this.Gateways = @(Get-CimInstance -Namespace root/StandardCimv2 -ClassName MSFT_NetRoute -Filter ('InterfaceIndex={0} AND Protocol=3' -f $this.NetAdapterConfiguration.InterfaceIndex)) # documentation says Protocol=2 for NetMgmt, testing shows otherwise
 		}
 	}
 
@@ -317,6 +325,8 @@ PROCESS
 				Disconnect-VMNetworkAdapter -VMNetworkAdapter $OldSwitchData.GuestVNICs
 			}
 
+			Start-Sleep -Milliseconds 250	# seems to prefer a bit of rest time between removal commands
+
 			if($OldSwitchData.HostVNICs)
 			{
 				Write-Verbose -Message 'Removing management vNICs'
@@ -324,13 +334,19 @@ PROCESS
 				Remove-VMNetworkAdapter -ManagementOS
 			}
 
+			Start-Sleep -Milliseconds 250	# seems to prefer a bit of rest time between removal commands
+
 			Write-Verbose -Message 'Removing virtual switch'
 			Write-Progress @SwitchProgressParams -Status 'Removing virtual switch' -PercentComplete 30
 			Remove-VMSwitch -Name $OldSwitchData.Name -Force
 
+			Start-Sleep -Milliseconds 250	# seems to prefer a bit of rest time between removal commands
+
 			Write-Verbose -Message 'Removing team'
 			Write-Progress @SwitchProgressParams -Status 'Removing team' -PercentComplete 40
 			Remove-NetLbfoTeam -Name $OldSwitchData.TeamName -Confirm:$false
+
+			Start-Sleep -Milliseconds 250	# seems to prefer a bit of rest time between removal commands
 
 			Write-Verbose -Message 'Creating SET'
 			Write-Progress @SwitchProgressParams -Status 'Creating SET' -PercentComplete 50
@@ -426,7 +442,7 @@ PROCESS
 				}
 				$NewNicSettings = Get-CimAdapterSettingsFromVirtualAdapter -VNIC $NewNic
 
-				if (-not ($VNIC.NetAdapterConfiguration.DHCPEnabled))
+				if ($VNIC.IPAddresses.Count -gt 0)
 				{
 					Write-Progress @VNICProgressParams -Status 'Setting DNS registration behavior' -PercentComplete 40
 					Set-CimAdapterProperty -InputObject $NewNicSettings -MethodName 'SetDynamicDNSRegistration' `
@@ -435,15 +451,16 @@ PROCESS
 					-Url 'https://docs.microsoft.com/en-us/windows/win32/cimwin32prov/setdynamicdnsregistration-method-in-class-win32-networkadapterconfiguration'
 
 					Write-Progress @VNICProgressParams -Status 'Setting IP and subnet masks' -PercentComplete 50
-					# split up IP data because if EnableStatic doesn't like one thing in any IP/mask pair, it won't set anything at all
-					$IPs = [System.Collections.ArrayList]$VNIC.NetAdapterConfiguration.IPAddress
-					$SubnetMasks = [System.Collections.ArrayList]$VNIC.NetAdapterConfiguration.IPSubnet
-					for ($i = 0; $i -lt $IPs.Count; $i++)
+					foreach($IPAddressData in $VNIC.IPAddresses)
 					{
-						Set-CimAdapterProperty -InputObject $NewNicSettings -MethodName 'EnableStatic' `
-							-Arguments @{ IPAddress = @($IPs[$i]); SubnetMask = @($SubnetMasks[$i]) } `
-							-Activity ('Setting IP {0} and subnet mask {1} on {2}' -f $IPs[$i], $SubnetMasks[$i], $NewNic.Name) `
-							-Url 'https://docs.microsoft.com/en-us/windows/win32/cimwin32prov/enablestatic-method-in-class-win32-networkadapterconfiguration'
+						Write-Verbose -Message ('Setting IP address {0}' -f $IPAddressData.IPAddress)
+						$OutNull = New-NetIPAddress -InterfaceIndex $NewNicSettings.InterfaceIndex -IPAddress $IPAddressData.IPAddress -PrefixLength $IPAddressData.PrefixLength -SkipAsSource $IPAddressData.SkipAsSource -ErrorAction Continue
+					}
+
+					foreach($GatewayData in $VNIC.Gateways)
+					{
+						Write-Verbose -Message ('Setting gateway address {0}' -f $GatewayData.NextHop)
+						New-NetRoute -InterfaceIndex $NewNicSettings.InterfaceIndex -DestinationPrefix $GatewayData.DestinationPrefix -NextHop $GatewayData.NextHop -RouteMetric $GatewayData.RouteMetric
 					}
 
 					Write-Progress @VNICProgressParams -Status 'Setting gateways' -PercentComplete 60
@@ -481,13 +498,12 @@ PROCESS
 						-Activity ('Setting WINS servers {0} on {1}' -f ([String]::Join(', ', $VNIC.NetAdapterConfiguration.WINSPrimaryServer, $VNIC.NetAdapterConfiguration.WINSSecondaryServer)), $NewNic.Name) `
 						-Url 'https://docs.microsoft.com/en-us/windows/win32/cimwin32prov/setwinsserver-method-in-class-win32-networkadapterconfiguration'
 					}
-
-					Write-Progress @VNICProgressParams -Status 'Setting NetBIOS over TCP/IP behavior' -PercentComplete 100
-					Set-CimAdapterProperty -InputObject $NewNicSettings -MethodName 'SetTcpipNetbios' `
-					-Arguments @{ TcpipNetbiosOptions = $VNIC.NetAdapterConfiguration.TcpipNetbiosOptions } `
-					-Activity ('Setting NetBIOS over TCP/IP behavior on {0} to {1}' -f $NewNic.Name, $VNIC.NetAdapterConfiguration.TcpipNetbiosOptions) `
-					-Url 'https://docs.microsoft.com/en-us/windows/win32/cimwin32prov/settcpipnetbios-method-in-class-win32-networkadapterconfiguration'
 				}
+				Write-Progress @VNICProgressParams -Status 'Setting NetBIOS over TCP/IP behavior' -PercentComplete 100
+				Set-CimAdapterProperty -InputObject $NewNicSettings -MethodName 'SetTcpipNetbios' `
+				-Arguments @{ TcpipNetbiosOptions = $VNIC.NetAdapterConfiguration.TcpipNetbiosOptions } `
+				-Activity ('Setting NetBIOS over TCP/IP behavior on {0} to {1}' -f $NewNic.Name, $VNIC.NetAdapterConfiguration.TcpipNetbiosOptions) `
+				-Url 'https://docs.microsoft.com/en-us/windows/win32/cimwin32prov/settcpipnetbios-method-in-class-win32-networkadapterconfiguration'
 			}
 
 			Write-Progress @VNICProgressParams -Completed
@@ -504,7 +520,7 @@ PROCESS
 					}
 					catch
 					{
-						Write-Error -Message ('Cannot connect virtual adapter "{0}" with MAC address "{1}" to virtual switch "{2}": {3}' -f $GuestVNIC.Name, $GuestVNIC.MacAddress, $NewSwitch.Name, $_.Exception.Message) -ErrorAction Continue
+						Write-Error -Message ('Failed to connect virtual adapter "{0}" with MAC address "{1}" to virtual switch "{2}": {3}' -f $GuestVNIC.Name, $GuestVNIC.MacAddress, $NewSwitch.Name, $_.Exception.Message) -ErrorAction Continue
 					}
 				}
 			}
