@@ -69,6 +69,11 @@ BEGIN
 {
 	Set-StrictMode -Version Latest
 	$ErrorActionPreference = [System.Management.Automation.ActionPreference]::Stop
+	if(Get-CimInstance -Namespace root -ClassName __NAMESPACE -Filter 'Name="MSCluster"')
+	{
+		$IsClustered = [bool](Get-CimInstance -Namespace root/MSCluster -ClassName mscluster_cluster -ErrorAction SilentlyContinue)
+		$ClusterNode = Get-CimInstance -Namespace root/MSCluster -ClassName MSCluster_Node -Filter ('Name="{0}"' -f $env:COMPUTERNAME)
+	}
 
 	function Get-CimAdapterConfigFromVirtualAdapter
 	{
@@ -134,13 +139,11 @@ BEGIN
 		[System.UInt32]$LoadBalancingAlgorithm
 		[System.Boolean]$PacketDirect
 		[NetAdapterDataPack[]]$HostVNICs
-		[Microsoft.HyperV.PowerShell.VMNetworkAdapter[]]$GuestVNICs
 
 		SwitchDataPack(
 			[psobject]$VSwitch,
 			[Microsoft.Management.Infrastructure.CimInstance]$Team,
-			[System.Object[]]$VNICs,
-			[Microsoft.HyperV.PowerShell.VMNetworkAdapter[]]$GuestVNICs
+			[System.Object[]]$VNICs
 		)
 		{
 			$this.Name = $VSwitch.Name
@@ -156,7 +159,6 @@ BEGIN
 			$this.LoadBalancingAlgorithm = $Team.LoadBalancingAlgorithm
 			$this.PacketDirect = $VSwitch.PacketDirectEnabled
 			$this.HostVNICs = $VNICs
-			$this.GuestVNICs = $GuestVNICs
 		}
 	}
 
@@ -288,22 +290,20 @@ PROCESS
 		Write-Verbose -Message 'Loading team'
 		$Team = Get-CimAssociatedInstance -InputObject $TeamAdapter -ResultClassName MSFT_NetLbfoTeam
 
-		Write-Progress -Activity ('Loading information from virtual switch "{0}"' -f $VSwitch.Name) -Status 'Guest virtual adapters' -PercentComplete 50 -ParentId 1
-		Write-Verbose -Message 'Loading VM adapters connected to this switch'
-		$GuestVNICs = Get-VMNetworkAdapter -VMName * | Where-Object -Property SwitchName -EQ $VSwitch.Name
 
-		Write-Progress -Activity ('Loading information from virtual switch "{0}"' -f $VSwitch.Name) -Status 'Host virtual adapters' -PercentComplete 75 -ParentId 1
+		Write-Progress -Activity ('Loading information from virtual switch "{0}"' -f $VSwitch.Name) -Status 'Host virtual adapters' -PercentComplete 50 -ParentId 1
 		Write-Verbose -Message 'Loading management adapters connected to this switch'
 		$HostVNICs = Get-VMNetworkAdapter -ManagementOS -SwitchName $VSwitch.Name
 
 		Write-Verbose -Message 'Compiling virtual switch and management OS virtual NIC information'
-		$OutNull = $SwitchRebuildData.Add([SwitchDataPack]::new($VSwitch, $Team, ($HostVNICs.ForEach({ [NetAdapterDataPack]::new($_) })), $GuestVNICs))
+		Write-Progress -Activity ('Loading information from virtual switch "{0}"' -f $VSwitch.Name) -Status 'Storing vSwitch data' -PercentComplete 75 -ParentId 1
+		$OutNull = $SwitchRebuildData.Add([SwitchDataPack]::new($VSwitch, $Team, ($HostVNICs.ForEach({ [NetAdapterDataPack]::new($_) }))))
 		Write-Progress -Activity ('Loading information from virtual switch "{0}"' -f $VSwitch.Name) -Completed
 	}
 	Write-Progress -Activity 'Pre-flight' -Status 'Cleaning up' -PercentComplete 99 -ParentId 1
 
 	Write-Verbose -Message 'Clearing loop variables'
-	$VSwitch = $Team = $TeamAdapter = $GuestVNICs = $HostVNICs = $null
+	$VSwitch = $Team = $TeamAdapter = $HostVNICs = $null
 
 	Write-Progress -Activity 'Pre-flight' -Completed
 
@@ -316,6 +316,7 @@ PROCESS
 	$SwitchMark = 0
 	$SwitchCounter = 1
 	$SwitchStep = 1 / $SwitchRebuildData.Count * 100
+	$ClusterNodeRunning = $IsClustered
 
 	foreach ($OldSwitchData in $SwitchRebuildData)
 	{
@@ -326,12 +327,34 @@ PROCESS
 		$ShouldProcessOperation = 'Disconnect all virtual adapters, remove team and switch, build switch-embedded team, replace management OS vNICs, reconnect virtual adapters'
 		if ($PSCmdlet.ShouldProcess($ShouldProcessTargetText , $ShouldProcessOperation))
 		{
+			if($ClusterNodeRunning)
+			{
+				Write-Verbose -Message 'Draining cluster node'
+				Write-Progress -Activity 'Draining cluster node' -Status 'Draining'
+				$OutNull = Invoke-CimMethod -InputObject $ClusterNode -MethodName 'Pause' -Arguments @{DrainType=2;TargetNode=''}
+				while($ClusterNodeRunning)
+				{
+					Start-Sleep -Seconds 1
+					$ClusterNode = Get-CimInstance -InputObject $ClusterNode
+					switch($ClusterNode.NodeDrainStatus)
+					{
+						0 { Write-Error -Message 'Failed to initiate cluster node drain' }
+						2 { $ClusterNodeRunning = $false }
+						3 { Write-Error -Message 'Failed to drain cluster roles' }
+						# 1 is all that's left, will cause loop to continue
+					}
+				}
+			}
+			Write-Progress -Activity 'Draining cluster node' -Completed
+
 			$SwitchProgressParams = @{Activity = ('Processing switch {0}' -f $OldSwitchData.Name); ParentId = 1; Id=2 }
 			Write-Verbose -Message 'Disconnecting virtual machine adapters'
 			Write-Progress @SwitchProgressParams -Status 'Disconnecting virtual machine adapters' -PercentComplete 10
-			if($OldSwitchData.GuestVNICs)
+			Write-Verbose -Message 'Loading VM adapters connected to this switch'
+			$GuestVNICs = Get-VMNetworkAdapter -VMName * | Where-Object -Property SwitchName -EQ $OldSwitchData.Name
+			if($GuestVNICs)
 			{
-				Disconnect-VMNetworkAdapter -VMNetworkAdapter $OldSwitchData.GuestVNICs
+				Disconnect-VMNetworkAdapter -VMNetworkAdapter $GuestVNICs
 			}
 
 			Start-Sleep -Milliseconds 250	# seems to prefer a bit of rest time between removal commands
@@ -453,18 +476,18 @@ PROCESS
 
 				if ($VNIC.IPAddresses.Count -gt 0)
 				{
-					Write-Progress @VNICProgressParams -Status 'Setting DNS registration behavior' -PercentComplete 40
-					Set-CimAdapterProperty -InputObject $NewNicConfig -MethodName 'SetDynamicDNSRegistration' `
-					-Arguments @{ FullDNSRegistrationEnabled = $VNIC.NetAdapterConfiguration.FullDNSRegistrationEnabled; DomainDNSRegistrationEnabled = $VNIC.NetAdapterConfiguration.DomainDNSRegistrationEnabled } `
-					-Activity ('Setting DNS registration behavior (dynamic registration: {0}, with domain name: {1}) on {2}' -f $VNIC.NetAdapterConfiguration.FullDNSRegistrationEnabled, $VNIC.NetAdapterConfiguration.DomainDNSRegistrationEnabled, $NewNic.Name) `
-					-Url 'https://docs.microsoft.com/en-us/windows/win32/cimwin32prov/setdynamicdnsregistration-method-in-class-win32-networkadapterconfiguration'
-
-					Write-Progress @VNICProgressParams -Status 'Setting IP and subnet masks' -PercentComplete 41
+					Write-Progress @VNICProgressParams -Status 'Setting IP and subnet masks' -PercentComplete 40
 					foreach($IPAddressData in $VNIC.IPAddresses)
 					{
 						Write-Verbose -Message ('Setting IP address {0}' -f $IPAddressData.IPAddress)
 						$OutNull = New-NetIPAddress -InterfaceIndex $NewNicConfig.InterfaceIndex -IPAddress $IPAddressData.IPAddress -PrefixLength $IPAddressData.PrefixLength -SkipAsSource $IPAddressData.SkipAsSource -ErrorAction Continue
 					}
+
+					Write-Progress @VNICProgressParams -Status 'Setting DNS registration behavior' -PercentComplete 41
+					Set-CimAdapterProperty -InputObject $NewNicConfig -MethodName 'SetDynamicDNSRegistration' `
+					-Arguments @{ FullDNSRegistrationEnabled = $VNIC.NetAdapterConfiguration.FullDNSRegistrationEnabled; DomainDNSRegistrationEnabled = $VNIC.NetAdapterConfiguration.DomainDNSRegistrationEnabled } `
+					-Activity ('Setting DNS registration behavior (dynamic registration: {0}, with domain name: {1}) on {2}' -f $VNIC.NetAdapterConfiguration.FullDNSRegistrationEnabled, $VNIC.NetAdapterConfiguration.DomainDNSRegistrationEnabled, $NewNic.Name) `
+					-Url 'https://docs.microsoft.com/en-us/windows/win32/cimwin32prov/setdynamicdnsregistration-method-in-class-win32-networkadapterconfiguration'
 
 					foreach($GatewayData in $VNIC.Gateways)
 					{
@@ -508,11 +531,14 @@ PROCESS
 						-Url 'https://docs.microsoft.com/en-us/windows/win32/cimwin32prov/setwinsserver-method-in-class-win32-networkadapterconfiguration'
 					}
 				}
-				Write-Progress @VNICProgressParams -Status 'Setting NetBIOS over TCP/IP behavior' -PercentComplete 50
-				Set-CimAdapterProperty -InputObject $NewNicConfig -MethodName 'SetTcpipNetbios' `
-				-Arguments @{ TcpipNetbiosOptions = $VNIC.NetAdapterConfiguration.TcpipNetbiosOptions } `
-				-Activity ('Setting NetBIOS over TCP/IP behavior on {0} to {1}' -f $NewNic.Name, $VNIC.NetAdapterConfiguration.TcpipNetbiosOptions) `
-				-Url 'https://docs.microsoft.com/en-us/windows/win32/cimwin32prov/settcpipnetbios-method-in-class-win32-networkadapterconfiguration'
+				if($VNIC.NetAdapterConfiguration.TcpipNetbiosOptions)	# defaults to 0
+				{
+					Write-Progress @VNICProgressParams -Status 'Setting NetBIOS over TCP/IP behavior' -PercentComplete 50
+					Set-CimAdapterProperty -InputObject $NewNicConfig -MethodName 'SetTcpipNetbios' `
+					-Arguments @{ TcpipNetbiosOptions = $VNIC.NetAdapterConfiguration.TcpipNetbiosOptions } `
+					-Activity ('Setting NetBIOS over TCP/IP behavior on {0} to {1}' -f $NewNic.Name, $VNIC.NetAdapterConfiguration.TcpipNetbiosOptions) `
+					-Url 'https://docs.microsoft.com/en-us/windows/win32/cimwin32prov/settcpipnetbios-method-in-class-win32-networkadapterconfiguration'
+				}
 
 				Write-Progress @VNICProgressParams -Status 'Applying advanced properties' -PercentComplete 60
 				$NewNicAdvancedProperties = Get-AdvancedSettingsFromAdapterConfig -AdapterConfig $NewNicConfig
@@ -538,9 +564,9 @@ PROCESS
 
 			Write-Progress @SwitchProgressParams -Status 'Reconnecting guest vNICs' -PercentComplete 80
 
-			if($OldSwitchData.GuestVNICs)
+			if($GuestVNICs)
 			{
-				foreach ($GuestVNIC in $OldSwitchData.GuestVNICs)
+				foreach ($GuestVNIC in $GuestVNICs)
 				{
 					try
 					{
@@ -555,5 +581,10 @@ PROCESS
 
 			Write-Progress @SwitchProgressParams -Completed
 		}
+	}
+	if($IsClustered)
+	{
+		Write-Verbose -Message 'Resuming cluster node'
+		$OutNull = Invoke-CimMethod -InputObject $ClusterNode -MethodName 'Resume' -Arguments @{FailbackType=1}
 	}
 }
