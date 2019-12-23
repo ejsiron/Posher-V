@@ -70,7 +70,7 @@ BEGIN
 	Set-StrictMode -Version Latest
 	$ErrorActionPreference = [System.Management.Automation.ActionPreference]::Stop
 
-	function Get-CimAdapterSettingsFromVirtualAdapter
+	function Get-CimAdapterConfigFromVirtualAdapter
 	{
 		param(
 			[Parameter()][psobject]$VNIC
@@ -79,6 +79,15 @@ BEGIN
 		$VnicLanEndpoint1 = Get-CimAssociatedInstance -InputObject $VnicCim -ResultClassName Msvm_LANEndpoint
 		$NetAdapter = Get-CimInstance -ClassName Win32_NetworkAdapter -Filter ('GUID="{0}"' -f $VnicLANEndpoint1.Name.Substring(($VnicLANEndpoint1.Name.IndexOf('{'))))
 		Get-CimAssociatedInstance -InputObject $NetAdapter -ResultClassName Win32_NetworkAdapterConfiguration
+	}
+
+	function Get-AdvancedSettingsFromAdapterConfig
+	{
+		param(
+			[Parameter()][psobject]$AdapterConfig
+		)
+		$MSFTAdapter = Get-CimInstance -Namespace root/StandardCimv2 -ClassName MSFT_NetAdapter -Filter ('InterfaceIndex={0}' -f $AdapterConfig.InterfaceIndex)
+		Get-CimAssociatedInstance -InputObject $MSFTAdapter -ResultClassName MSFT_NetAdapterAdvancedPropertySettingData
 	}
 
 	class NetAdapterDataPack
@@ -90,7 +99,7 @@ BEGIN
 		[System.Int64]$MaximumBandwidth = 0
 		[System.Int32]$VlanId = 0
 		[Microsoft.Management.Infrastructure.CimInstance]$NetAdapterConfiguration
-		[Microsoft.Management.Infrastructure.CimInstance]$AdvancedProperties
+		[Microsoft.Management.Infrastructure.CimInstance[]]$AdvancedProperties
 		[Microsoft.Management.Infrastructure.CimInstance[]]$IPAddresses
 		[Microsoft.Management.Infrastructure.CimInstance[]]$Gateways
 
@@ -106,10 +115,10 @@ BEGIN
 			}
 
 			$this.VlanId = [System.Int32](Get-VMNetworkAdapterVlan -VMNetworkAdapter $VNIC).AccessVlanId
-			$this.NetAdapterConfiguration = Get-CimAdapterSettingsFromVirtualAdapter -VNIC $VNIC
-			$MSFTAdapter = Get-CimInstance -Namespace root/StandardCimv2 -ClassName MSFT_NetAdapter -Filter ('InterfaceIndex={0}' -f $this.NetAdapterConfiguration.InterfaceIndex)
-			$this.AdvancedProperties = Get-CimAssociatedInstance -InputObject $MSFTAdapter -ResultClassName MSFT_NetAdapterAdvancedPropertySettingData | Where-Object -FilterScript { $_.DisplayName -ne '' -and ($_.RegistryValue -replace '{}', '') -ne $_.DefaultRegistryValue }
-			# alternatively use Get-NetIPAddress and Get-NetRoute, but they treat empty results as errors
+			$this.NetAdapterConfiguration = Get-CimAdapterConfigFromVirtualAdapter -VNIC $VNIC
+			$this.AdvancedProperties = @(Get-AdvancedSettingsFromAdapterConfig -AdapterConfig $this.NetAdapterConfiguration  | Where-Object -FilterScript { (-not [String]::IsNullOrEmpty($_.DefaultRegistryValue)) -and (-not [String]::IsNullOrEmpty([string]($_.RegistryValue))) -and (-not [String]::IsNullOrEmpty($_.DisplayName)) -and ($_.RegistryValue[0] -ne $_.DefaultRegistryValue) })
+
+			# alternative to the below: use Get-NetIPAddress and Get-NetRoute, but they treat empty results as errors
 			$this.IPAddresses = @(Get-CimInstance -Namespace root/StandardCimv2 -ClassName MSFT_NetIPAddress -Filter ('InterfaceIndex={0} AND PrefixOrigin=1' -f $this.NetAdapterConfiguration.InterfaceIndex))
 			$this.Gateways = @(Get-CimInstance -Namespace root/StandardCimv2 -ClassName MSFT_NetRoute -Filter ('InterfaceIndex={0} AND Protocol=3' -f $this.NetAdapterConfiguration.InterfaceIndex)) # documentation says Protocol=2 for NetMgmt, testing shows otherwise
 		}
@@ -180,7 +189,7 @@ PROCESS
 	{
 		'ByID'
 		{
-			$VMSwitches.AddRange($Id.ForEach( { Get-VMSwitch -Id $_ }))
+			$VMSwitches.AddRange($Id.ForEach( { Get-VMSwitch -Id $_ -ErrorAction SilentlyContinue }))
 		}
 		'BySwitchObject'
 		{
@@ -192,11 +201,11 @@ PROCESS
 			$NameList.AddRange($Name.ForEach( { $_.Trim() }))
 			if ($NameList.Contains('') -or $NameList.Contains('*'))
 			{
-				$VMSwitches.AddRange(@(Get-VMSwitch))
+				$VMSwitches.AddRange(@(Get-VMSwitch -ErrorAction SilentlyContinue))
 			}
 			else
 			{
-				$VMSwitches.AddRange($NameList.ForEach( { Get-VMSwitch -Name $_ }))
+				$VMSwitches.AddRange($NameList.ForEach( { Get-VMSwitch -Name $_ -ErrorAction SilentlyContinue }))
 			}
 		}
 	}
@@ -206,7 +215,7 @@ PROCESS
 	}
 	else
 	{
-		throw('No virtual VMswitches match the provided criteria')
+		throw('No virtual switches match the provided criteria')
 	}
 
 	Write-Progress -Activity 'Pre-flight' -Status 'Verifying operating system version' -PercentComplete 5 -Id 1
@@ -440,33 +449,33 @@ PROCESS
 					Write-Verbose -Message ('Setting VLAN ID on virtual adapter "{0}" on switch "{1}"' -f $VNIC.Name, $NewSwitch.Name)
 					Set-VMNetworkAdapterVlan -VMNetworkAdapter $NewNic -Access -VlanId $VNIC.VlanId
 				}
-				$NewNicSettings = Get-CimAdapterSettingsFromVirtualAdapter -VNIC $NewNic
+				$NewNicConfig = Get-CimAdapterConfigFromVirtualAdapter -VNIC $NewNic
 
 				if ($VNIC.IPAddresses.Count -gt 0)
 				{
 					Write-Progress @VNICProgressParams -Status 'Setting DNS registration behavior' -PercentComplete 40
-					Set-CimAdapterProperty -InputObject $NewNicSettings -MethodName 'SetDynamicDNSRegistration' `
+					Set-CimAdapterProperty -InputObject $NewNicConfig -MethodName 'SetDynamicDNSRegistration' `
 					-Arguments @{ FullDNSRegistrationEnabled = $VNIC.NetAdapterConfiguration.FullDNSRegistrationEnabled; DomainDNSRegistrationEnabled = $VNIC.NetAdapterConfiguration.DomainDNSRegistrationEnabled } `
 					-Activity ('Setting DNS registration behavior (dynamic registration: {0}, with domain name: {1}) on {2}' -f $VNIC.NetAdapterConfiguration.FullDNSRegistrationEnabled, $VNIC.NetAdapterConfiguration.DomainDNSRegistrationEnabled, $NewNic.Name) `
 					-Url 'https://docs.microsoft.com/en-us/windows/win32/cimwin32prov/setdynamicdnsregistration-method-in-class-win32-networkadapterconfiguration'
 
-					Write-Progress @VNICProgressParams -Status 'Setting IP and subnet masks' -PercentComplete 50
+					Write-Progress @VNICProgressParams -Status 'Setting IP and subnet masks' -PercentComplete 41
 					foreach($IPAddressData in $VNIC.IPAddresses)
 					{
 						Write-Verbose -Message ('Setting IP address {0}' -f $IPAddressData.IPAddress)
-						$OutNull = New-NetIPAddress -InterfaceIndex $NewNicSettings.InterfaceIndex -IPAddress $IPAddressData.IPAddress -PrefixLength $IPAddressData.PrefixLength -SkipAsSource $IPAddressData.SkipAsSource -ErrorAction Continue
+						$OutNull = New-NetIPAddress -InterfaceIndex $NewNicConfig.InterfaceIndex -IPAddress $IPAddressData.IPAddress -PrefixLength $IPAddressData.PrefixLength -SkipAsSource $IPAddressData.SkipAsSource -ErrorAction Continue
 					}
 
 					foreach($GatewayData in $VNIC.Gateways)
 					{
 						Write-Verbose -Message ('Setting gateway address {0}' -f $GatewayData.NextHop)
-						New-NetRoute -InterfaceIndex $NewNicSettings.InterfaceIndex -DestinationPrefix $GatewayData.DestinationPrefix -NextHop $GatewayData.NextHop -RouteMetric $GatewayData.RouteMetric
+						$OutNull = New-NetRoute -InterfaceIndex $NewNicConfig.InterfaceIndex -DestinationPrefix $GatewayData.DestinationPrefix -NextHop $GatewayData.NextHop -RouteMetric $GatewayData.RouteMetric
 					}
 
-					Write-Progress @VNICProgressParams -Status 'Setting gateways' -PercentComplete 60
+					Write-Progress @VNICProgressParams -Status 'Setting gateways' -PercentComplete 42
 					if ($VNIC.NetAdapterConfiguration.DefaultIPGateway)
 					{
-						Set-CimAdapterProperty -InputObject $NewNicSettings -MethodName 'SetGateways' `
+						Set-CimAdapterProperty -InputObject $NewNicConfig -MethodName 'SetGateways' `
 						-Arguments @{ DefaultIPGateway = $VNIC.NetAdapterConfiguration.DefaultIPGateway } `
 						-Activity ('Setting gateways {0} on {1}'  -f $VNIC.NetAdapterConfiguration.DefaultIPGateway, $NewNic.Name) `
 						-Url 'https://docs.microsoft.com/en-us/windows/win32/cimwin32prov/setgateways-method-in-class-win32-networkadapterconfiguration'
@@ -474,8 +483,8 @@ PROCESS
 
 					if($VNIC.NetAdapterConfiguration.DNSDomain)
 					{
-						Write-Progress @VNICProgressParams -Status 'Setting DNS domain' -PercentComplete 70
-						Set-CimAdapterProperty -InputObject $NewNicSettings -MethodName 'SetDNSDomain' `
+						Write-Progress @VNICProgressParams -Status 'Setting DNS domain' -PercentComplete 43
+						Set-CimAdapterProperty -InputObject $NewNicConfig -MethodName 'SetDNSDomain' `
 						-Arguments @{ DNSDomain = $VNIC.NetAdapterConfiguration.DNSDomain } `
 						-Activity ('Setting DNS domain {0} on {1}' -f $VNIC.NetAdapterConfiguration.DNSDomain, $NewNic.Name) `
 						-Url 'https://docs.microsoft.com/en-us/windows/win32/cimwin32prov/setdnsdomain-method-in-class-win32-networkadapterconfiguration'
@@ -483,8 +492,8 @@ PROCESS
 
 					if ($VNIC.NetAdapterConfiguration.DNSServerSearchOrder)
 					{
-						Write-Progress @VNICProgressParams -Status 'Setting DNS servers' -PercentComplete 80
-						Set-CimAdapterProperty -InputObject $NewNicSettings -MethodName 'SetDNSServerSearchOrder' `
+						Write-Progress @VNICProgressParams -Status 'Setting DNS servers' -PercentComplete 44
+						Set-CimAdapterProperty -InputObject $NewNicConfig -MethodName 'SetDNSServerSearchOrder' `
 						-Arguments @{ DNSServerSearchOrder = $VNIC.NetAdapterConfiguration.DNSServerSearchOrder } `
 						-Activity ('setting DNS servers {0} on {1}' -f [String]::Join(', ', $VNIC.NetAdapterConfiguration.DNSServerSearchOrder), $NewNic.Name) `
 						-Url 'https://docs.microsoft.com/en-us/windows/win32/cimwin32prov/setdnsserversearchorder-method-in-class-win32-networkadapterconfiguration'
@@ -492,18 +501,37 @@ PROCESS
 
 					if($VNIC.NetAdapterConfiguration.WINSPrimaryServer)
 					{
-						Write-Progress @VNICProgressParams -Status 'Setting WINS servers' -PercentComplete 90
-						Set-CimAdapterProperty -InputObject $NewNicSettings -MethodName 'SetWINSServer' `
+						Write-Progress @VNICProgressParams -Status 'Setting WINS servers' -PercentComplete 45
+						Set-CimAdapterProperty -InputObject $NewNicConfig -MethodName 'SetWINSServer' `
 						-Arguments @{ WINSPrimaryServer = $VNIC.NetAdapterConfiguration.WINSPrimaryServer; WINSSecondaryServer = $VNIC.NetAdapterConfiguration.WINSSecondaryServer }
 						-Activity ('Setting WINS servers {0} on {1}' -f ([String]::Join(', ', $VNIC.NetAdapterConfiguration.WINSPrimaryServer, $VNIC.NetAdapterConfiguration.WINSSecondaryServer)), $NewNic.Name) `
 						-Url 'https://docs.microsoft.com/en-us/windows/win32/cimwin32prov/setwinsserver-method-in-class-win32-networkadapterconfiguration'
 					}
 				}
-				Write-Progress @VNICProgressParams -Status 'Setting NetBIOS over TCP/IP behavior' -PercentComplete 100
-				Set-CimAdapterProperty -InputObject $NewNicSettings -MethodName 'SetTcpipNetbios' `
+				Write-Progress @VNICProgressParams -Status 'Setting NetBIOS over TCP/IP behavior' -PercentComplete 50
+				Set-CimAdapterProperty -InputObject $NewNicConfig -MethodName 'SetTcpipNetbios' `
 				-Arguments @{ TcpipNetbiosOptions = $VNIC.NetAdapterConfiguration.TcpipNetbiosOptions } `
 				-Activity ('Setting NetBIOS over TCP/IP behavior on {0} to {1}' -f $NewNic.Name, $VNIC.NetAdapterConfiguration.TcpipNetbiosOptions) `
 				-Url 'https://docs.microsoft.com/en-us/windows/win32/cimwin32prov/settcpipnetbios-method-in-class-win32-networkadapterconfiguration'
+
+				Write-Progress @VNICProgressParams -Status 'Applying advanced properties' -PercentComplete 60
+				$NewNicAdvancedProperties = Get-AdvancedSettingsFromAdapterConfig -AdapterConfig $NewNicConfig
+				$PropertiesCounter = 0
+				$PropertyProgressParams = @{Activity = 'Processing VNIC advanced properties'; ParentId = 3; Id=4 }
+				foreach($SourceAdvancedProperty in $VNIC.AdvancedProperties)
+				{
+					foreach($NewNicAdvancedProperty in $NewNicAdvancedProperties)
+					{
+						if($SourceAdvancedProperty.ElementName -eq $NewNicAdvancedProperty.ElementName)
+						{
+							$PropertiesCounter++
+							Write-Progress @PropertyProgressParams -PercentComplete ($PropertiesCounter / $VNIC.AdvancedProperties.Count * 100) -Status ('Applying property {0}' -f $SourceAdvancedProperty.DisplayName)
+							Write-Verbose ('Setting advanced property {0} to {1} on {2}' -f $SourceAdvancedProperty.DisplayName, $SourceAdvancedProperty.DisplayValue, $VNIC.Name)
+							$NewNicAdvancedProperty.RegistryValue = $SourceAdvancedProperty.RegistryValue
+							Set-CimInstance -InputObject $NewNicAdvancedProperty -ErrorAction Continue
+						}
+					}
+				}
 			}
 
 			Write-Progress @VNICProgressParams -Completed
