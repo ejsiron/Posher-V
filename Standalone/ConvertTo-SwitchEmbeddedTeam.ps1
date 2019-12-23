@@ -6,13 +6,15 @@
 	Converts LBFO+Virtual Switch combinations to switch-embedded teams.
 
 	Performs the following steps:
-	1. Saves information about management OS vNICs
-	2. If a cluster member, sets to maintenance mode
+	1. Saves information about virtual switches and management OS vNICs (includes IPs, QoS settings, jumbo frame info, etc.)
+	2. If system belongs to a cluster, sets to maintenance mode
 	3. Disconnects attached virtual machine vNICs
 	4. Deletes the virtual switch
 	5. Deletes the LBFO team
-	6. Recreates management OS vNICs
-	7. Reconnects previously-attached virtual machine vNICs
+	6. Creates switch-embedded team
+	7. Recreates management OS vNICs
+	8. Reconnects previously-attached virtual machine vNICs
+	9. If system belongs to a cluster, ends maintenance mode
 
 	If you do not specify any overriding parameters, the new switch uses the same settings as the original LBFO+team.
 
@@ -40,16 +42,65 @@
 	None: No network QoS
 	Absolute: minimum bandwidth values specify bits per second
 	Weight: minimum bandwidth values range from 1 to 100 and represent percentages
-	Default: use Absolute QoS
+	Default: use system default
+
+	WARNING: Changing the QoS mode may cause guest vNICS to fail to re-attach and may inhibit Live Migration. Use carefully if you have special QoS settings on guest virtual NICs.
 
 .PARAMETER Notes
 	A note to associate with the converted switch(es). If not specified, uses the same setting as the original LBFO+switch or the default if UseDefaults is set.
 
-.PARAMETER EnablePacketDirect
-	Attempts to enable packet direct on the converted switch(es). If not specified, uses the same setting as the original LBFO+switch or the default if UseDefaults is set.
-
 .PARAMETER Force
-	If set, bypasses confirmation.
+	If specified, bypasses confirmation.
+
+.NOTES
+	Author: Eric Siron
+	Version 1.0, December 22, 2019
+	Released under MIT license
+
+.EXAMPLE
+	ConvertTo-SwitchEmbeddedTeam
+
+	Converts all existing LBFO+switch combinations to switch embedded teams. Copies settings from original switches and management OS virtual NICs to new switch and vNICs.
+
+.EXAMPLE
+	ConvertTo-SwitchEmbeddedTeam -Name vSwitch
+
+	Converts the LBFO+switch combination of the virtual switch named "vSwitch" to a switch embedded teams. Copies settings from original switch and management OS virtual NICs to new switch and vNICs.
+
+.EXAMPLE
+	ConvertTo-SwitchEmbeddedTeam -Force
+
+	Converts all existing LBFO+team combinations without prompting.
+
+.EXAMPLE
+	ConvertTo-SwitchEmbeddedTeam -NewName NewSET
+
+	If the system has one LBFO+switch, converts it to a switch-embedded team with the name "NewSET".
+	If the system has multiple LBFO+switch combinations, fails due to mismatch (see next example).
+
+.EXAMPLE
+	ConvertTo-SwitchEmbeddedTeam -NewName NewSET1, NewSET2
+
+	If the system has two LBFO+switches, converts them to switch-embedded team with the name "NewSET1" and "NEWSET2", IN THE ORDER THAT GET-VMSWITCH RETRIEVES THEM.
+
+.EXAMPLE
+	ConvertTo-SwitchEmbeddedTeam OldSwitch1, OldSwitch2 -NewName NewSET1, NewSET2
+
+	Converts the LBFO+switches named "OldSwitch1" and "OldSwitch2" to SETs named "NewSET1" and "NewSET2", respectively.
+
+.EXAMPLE
+	ConvertTo-SwitchEmbeddedTeam -UseDefaults
+
+	Converts all existing LBFO+switch combinations to switch embedded teams. Discards non-default settings for the switch and Hyper-V-related management OS vNICs. Keeps IP addresses and advanced settings (ex. jumbo frames).
+
+.EXAMPLE
+	ConvertTo-SwitchEmbeddedTeam -MinimumBandwidthMode Weight
+
+	Converts all existing LBFO+switch combinations to switch embedded teams. Forces the new SET to use "Weight" for its minimum bandwidth mode.
+	WARNING: Changing the QoS mode may cause guest vNICS to fail to re-attach and may inhibit Live Migration. Use carefully if you have special QoS settings on guest virtual NICs.
+
+.LINK
+https://ejsiron.github.io/Posher-V/ConvertTo-SwitchEmbeddedTeam
 #>
 
 #Requires -RunAsAdministrator
@@ -66,7 +117,6 @@ param(
 	[Parameter()][Microsoft.HyperV.PowerShell.VMSwitchLoadBalancingAlgorithm]$LoadBalancingAlgorithm,
 	[Parameter()][Microsoft.HyperV.PowerShell.VMSwitchBandwidthMode]$MinimumBandwidthMode,
 	[Parameter()][String]$Notes = '',
-	[Parameter()][Switch]$EnablePacketDirect,
 	[Parameter()][Switch]$Force
 )
 
@@ -74,6 +124,7 @@ BEGIN
 {
 	Set-StrictMode -Version Latest
 	$ErrorActionPreference = [System.Management.Automation.ActionPreference]::Stop
+	$IsClustered = $false
 	if(Get-CimInstance -Namespace root -ClassName __NAMESPACE -Filter 'Name="MSCluster"')
 	{
 		$IsClustered = [bool](Get-CimInstance -Namespace root/MSCluster -ClassName mscluster_cluster -ErrorAction SilentlyContinue)
@@ -142,7 +193,6 @@ BEGIN
 		[System.String]$TeamName
 		[System.String[]]$TeamMembers
 		[System.UInt32]$LoadBalancingAlgorithm
-		[System.Boolean]$PacketDirect
 		[NetAdapterDataPack[]]$HostVNICs
 
 		SwitchDataPack(
@@ -162,7 +212,6 @@ BEGIN
 			$this.TeamName = $Team.Name
 			$this.TeamMembers = ((Get-CimAssociatedInstance -InputObject $Team -ResultClassName MSFT_NetLbfoTeamMember).Name)
 			$this.LoadBalancingAlgorithm = $Team.LoadBalancingAlgorithm
-			$this.PacketDirect = $VSwitch.PacketDirectEnabled
 			$this.HostVNICs = $VNICs
 		}
 	}
@@ -325,7 +374,12 @@ PROCESS
 
 	foreach ($OldSwitchData in $SwitchRebuildData)
 	{
-		Write-Progress -Activity 'Rebuilding switches' -Status ('Processing virtual switch {0}/{1}' -f $SwitchCounter, $SwitchRebuildData.Count) -PercentComplete $SwitchMark -Id 1
+		$SwitchName = $OldSwitchData.Name
+		if($NewName.Count -gt 0)
+		{
+			$SwitchName = $NewName[($SwitchCounter - 1)]
+		}
+		Write-Progress -Activity 'Rebuilding switches' -Status ('Processing virtual switch {0} ({1}/{2})' -f $SwitchName, $SwitchCounter, $SwitchRebuildData.Count) -PercentComplete $SwitchMark -Id 1
 		$SwitchCounter++
 		$SwitchMark += $SwitchStep
 		$ShouldProcessTargetText = 'Virtual switch {0}' -f $OldSwitchData.Name
@@ -419,21 +473,8 @@ PROCESS
 				$NewSwitchParams.Add('MinimumBandwidthMode', $NewMinimumBandwidthMode)
 			}
 
-			if ($EnablePacketDirect -or ($OldSwitchData.PacketDirect -and -not $UseDefaults))
-			{
-				$NewSwitchParams.Add('EnablePacketDirect', $true)
-			}
-
 			try
 			{
-				if($NewName[($SwitchCounter - 1)])
-				{
-					$SwitchName = $NewName[($SwitchCounter - 1)]
-				}
-				else
-				{
-					$SwitchName = $OldSwitchData.Name
-				}
 				$NewSwitch = New-VMSwitch @NewSwitchParams -Name $SwitchName -AllowManagementOS $false -EnableEmbeddedTeaming $true -Notes $Notes
 			}
 			catch
@@ -446,7 +487,6 @@ PROCESS
 			{
 				Write-Verbose -Message ('Setting load balancing mode to {0}' -f $SetLoadBalancingAlgorithm)
 				Write-Progress @SwitchProgressParams -Status 'Setting SET load balancing algorithm' -PercentComplete 60
-				$NewSwitchParams.Add('LoadBalancingAlgorithm', $SetLoadBalancingAlgorithm)
 				Set-VMSwitchTeam -Name $NewSwitch.Name -LoadBalancingAlgorithm $SetLoadBalancingAlgorithm
 			}
 
@@ -463,11 +503,11 @@ PROCESS
 				Write-Progress @VNICProgressParams -Status 'Adding vNIC' -PercentComplete 10
 				$NewNic = Add-VMNetworkAdapter -SwitchName $NewSwitch.Name -ManagementOS -Name $VNIC.Name -StaticMacAddress $VNIC.MacAddress -Passthru
 				$SetNicParams = @{ }
-				if ($VNIC.MinimumBandwidthAbsolute)
+				if ((-not $UseDefaults) -and $VNIC.MinimumBandwidthAbsolute -and $NewSwitch.BandwidthReservationMode -eq [Microsoft.HyperV.PowerShell.VMSwitchBandwidthMode]::Absolute)
 				{
 					$SetNicParams.Add('MinimumBandwidthAbsolute', $VNIC.MinimumBandwidthAbsolute)
 				}
-				elseif ($VNIC.MinimumBandwidthWeight)
+				elseif ((-not $UseDefaults) -and $VNIC.MinimumBandwidthWeight -and $NewSwitch.BandwidthReservationMode -eq [Microsoft.HyperV.PowerShell.VMSwitchBandwidthMode]::Weight)
 				{
 					$SetNicParams.Add('MinimumBandwidthWeight', $VNIC.MinimumBandwidthWeight)
 				}
