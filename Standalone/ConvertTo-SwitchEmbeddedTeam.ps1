@@ -7,11 +7,12 @@
 
 	Performs the following steps:
 	1. Saves information about management OS vNICs
-	2. Disconnects attached virtual machine vNICs
-	3. Deletes the virtual switch
-	4. Deletes the LBFO team
-	5. Recreates management OS vNICs
-	6. Reconnects previously-attached virtual machine vNICs
+	2. If a cluster member, sets to maintenance mode
+	3. Disconnects attached virtual machine vNICs
+	4. Deletes the virtual switch
+	5. Deletes the LBFO team
+	6. Recreates management OS vNICs
+	7. Reconnects previously-attached virtual machine vNICs
 
 	If you do not specify any overriding parameters, the new switch uses the same settings as the original LBFO+team.
 
@@ -46,6 +47,9 @@
 
 .PARAMETER EnablePacketDirect
 	Attempts to enable packet direct on the converted switch(es). If not specified, uses the same setting as the original LBFO+switch or the default if UseDefaults is set.
+
+.PARAMETER Force
+	If set, bypasses confirmation.
 #>
 
 #Requires -RunAsAdministrator
@@ -62,7 +66,8 @@ param(
 	[Parameter()][Microsoft.HyperV.PowerShell.VMSwitchLoadBalancingAlgorithm]$LoadBalancingAlgorithm,
 	[Parameter()][Microsoft.HyperV.PowerShell.VMSwitchBandwidthMode]$MinimumBandwidthMode,
 	[Parameter()][String]$Notes = '',
-	[Parameter()][Switch]$EnablePacketDirect
+	[Parameter()][Switch]$EnablePacketDirect,
+	[Parameter()][Switch]$Force
 )
 
 BEGIN
@@ -325,7 +330,7 @@ PROCESS
 		$SwitchMark += $SwitchStep
 		$ShouldProcessTargetText = 'Virtual switch {0}' -f $OldSwitchData.Name
 		$ShouldProcessOperation = 'Disconnect all virtual adapters, remove team and switch, build switch-embedded team, replace management OS vNICs, reconnect virtual adapters'
-		if ($PSCmdlet.ShouldProcess($ShouldProcessTargetText , $ShouldProcessOperation))
+		if ($Force -or $PSCmdlet.ShouldProcess($ShouldProcessTargetText , $ShouldProcessOperation))
 		{
 			if($ClusterNodeRunning)
 			{
@@ -421,11 +426,19 @@ PROCESS
 
 			try
 			{
-				$NewSwitch = New-VMSwitch @NewSwitchParams -Name $OldSwitchData.Name -AllowManagementOS $false -EnableEmbeddedTeaming $true -Notes $Notes
+				if($NewName[($SwitchCounter - 1)])
+				{
+					$SwitchName = $NewName[($SwitchCounter - 1)]
+				}
+				else
+				{
+					$SwitchName = $OldSwitchData.Name
+				}
+				$NewSwitch = New-VMSwitch @NewSwitchParams -Name $SwitchName -AllowManagementOS $false -EnableEmbeddedTeaming $true -Notes $Notes
 			}
 			catch
 			{
-				Write-Error -Message ('Unable to create virtual switch {0}: {1}' -f $OldSwitchData.Name, $_.Exception.Message) -ErrorAction Continue
+				Write-Error -Message ('Unable to create virtual switch {0}: {1}' -f $SwitchName, $_.Exception.Message) -ErrorAction Continue
 				continue
 			}
 
