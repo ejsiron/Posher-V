@@ -22,7 +22,6 @@ begin
 
 process
 {
-
     $vmna = Get-VMNetworkAdapter @gvmParams | Where-Object -Property 'MacAddress' -EQ -Value $MacAddress
     $vmna
     if(($vmna -ne $null) -and (-not($ContinueIfFound)))
